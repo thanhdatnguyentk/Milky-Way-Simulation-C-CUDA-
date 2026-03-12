@@ -1,0 +1,7 @@
+#ifndef SIMULATION_CONFIG_H
+#define SIMULATION_CONFIG_H
+
+#define G_CONSTANT 1.0f
+#define SOFTENING 0.01f
+
+#endif

@@ -1,0 +1,23 @@
+# Build artifacts
+*.obj
+*.exe
+*.ilk
+*.pdb
+*.lib
+*.exp
+
+# CUDA intermediates
+*.cudafe1.cpp
+*.cudafe1.gpu
+*.cudafe1.stub.c
+*.cudafe1.stub.c
+*.module_id
+*.fatbin
+
+# Output data
+output/
+
+# OS/editor
+.vscode/
+.DS_Store
+Thumbs.db
