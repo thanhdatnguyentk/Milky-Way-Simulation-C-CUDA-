@@ -21,6 +21,9 @@ void free_system(SystemOfBodies *system)
     free(system->ax);
     free(system->ay);
     free(system->az);
+    free(system->lum);
+    free(system->absmag);
+    free(system->ci);
 
     system->mass = NULL;
     system->x = NULL;
@@ -29,9 +32,12 @@ void free_system(SystemOfBodies *system)
     system->vx = NULL;
     system->vy = NULL;
     system->vz = NULL;
-    system->ax = NULL;
-    system->ay = NULL;
-    system->az = NULL;
+    system->ax     = NULL;
+    system->ay     = NULL;
+    system->az     = NULL;
+    system->lum    = NULL;
+    system->absmag = NULL;
+    system->ci     = NULL;
 }
 
 int allocate_system(SystemOfBodies *system, int num_bodies)
@@ -43,12 +49,16 @@ int allocate_system(SystemOfBodies *system, int num_bodies)
     system->vx = (float *)malloc((size_t)num_bodies * sizeof(float));
     system->vy = (float *)malloc((size_t)num_bodies * sizeof(float));
     system->vz = (float *)malloc((size_t)num_bodies * sizeof(float));
-    system->ax = (float *)malloc((size_t)num_bodies * sizeof(float));
-    system->ay = (float *)malloc((size_t)num_bodies * sizeof(float));
-    system->az = (float *)malloc((size_t)num_bodies * sizeof(float));
+    system->ax     = (float *)malloc((size_t)num_bodies * sizeof(float));
+    system->ay     = (float *)malloc((size_t)num_bodies * sizeof(float));
+    system->az     = (float *)malloc((size_t)num_bodies * sizeof(float));
+    system->lum    = (float *)malloc((size_t)num_bodies * sizeof(float));
+    system->absmag = (float *)malloc((size_t)num_bodies * sizeof(float));
+    system->ci     = (float *)malloc((size_t)num_bodies * sizeof(float));
 
     if (!system->mass || !system->x || !system->y || !system->z || !system->vx ||
-        !system->vy || !system->vz || !system->ax || !system->ay || !system->az) {
+        !system->vy || !system->vz || !system->ax || !system->ay || !system->az ||
+        !system->lum || !system->absmag || !system->ci) {
         free_system(system);
         return 0;
     }
@@ -73,8 +83,11 @@ void initialize_system(SystemOfBodies *system, int num_bodies)
         system->vy[index] = random_range(-0.2f, 0.2f);
         system->vz[index] = random_range(-0.05f, 0.05f);
 
-        system->ax[index] = 0.0f;
-        system->ay[index] = 0.0f;
-        system->az[index] = 0.0f;
+        system->ax[index]     = 0.0f;
+        system->ay[index]     = 0.0f;
+        system->az[index]     = 0.0f;
+        system->lum[index]    = 1.0f;
+        system->absmag[index] = 0.0f;
+        system->ci[index]     = 0.0f;
     }
 }

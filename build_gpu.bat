@@ -11,14 +11,25 @@ if errorlevel 1 goto :error
 nvcc -ccbin "%HOST_CL%" -c -Iinclude cuda\nbody.cu -o nbody_cuda.obj
 if errorlevel 1 goto :error
 
-cl /nologo /W4 /DUSE_CUDA /Iinclude main.c src\system.c src\simulation.c src\io.c nbody_cuda.obj /Fe:simulation_gpu.exe /link /MACHINE:X64 /LIBPATH:"%CUDA_PATH%\lib\x64" cudart.lib
+cl /nologo /EHsc /Iinclude /c src\png_writer.cpp /Fo:png_writer.obj
 if errorlevel 1 goto :error
+
+cl /nologo /EHsc /Iinclude /c src\preview_window.cpp /Fo:preview_window.obj
+if errorlevel 1 goto :error
+
+cl /nologo /W4 /DUSE_CUDA /Iinclude main.c src\system.c src\simulation.c src\io.c png_writer.obj preview_window.obj nbody_cuda.obj /Fe:simulation_gpu.exe /link /MACHINE:X64 /LIBPATH:"%CUDA_PATH%\lib\x64" cudart.lib windowscodecs.lib ole32.lib user32.lib gdi32.lib
+if errorlevel 1 goto :error
+
+del png_writer.obj 2>nul
+del preview_window.obj 2>nul
 
 popd
 echo GPU build completed.
 exit /b 0
 
 :error
+del png_writer.obj 2>nul
+del preview_window.obj 2>nul
 popd
 echo GPU build failed.
 exit /b 1
