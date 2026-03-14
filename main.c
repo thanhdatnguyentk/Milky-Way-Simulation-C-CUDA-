@@ -309,6 +309,22 @@ static int is_gpu_backend(const char *value)
 }
 
 #ifdef USE_CUDA
+static CudaRenderMode parse_render_mode(const char *value)
+{
+    if (value != NULL && (strcmp(value, "raster") == 0 || strcmp(value, "splat") == 0)) {
+        return CUDA_RENDER_MODE_RASTER;
+    }
+
+    return CUDA_RENDER_MODE_RAYTRACE;
+}
+
+static const char *render_mode_name(CudaRenderMode mode)
+{
+    return (mode == CUDA_RENDER_MODE_RASTER) ? "raster" : "raytrace";
+}
+#endif
+
+#ifdef USE_CUDA
 static int update_live_preview(
     const InteractiveState *interactive,
     float render_exposure,
@@ -324,6 +340,7 @@ static int update_live_preview(
     int height;
     char title[256];
     char hud_text[512];
+    const char *mode_name;
 
     render_camera.x = interactive->x;
     render_camera.y = interactive->y;
@@ -337,26 +354,27 @@ static int update_live_preview(
         return 0;
     }
 
+    mode_name = render_mode_name(get_cuda_render_mode());
+
     rgba = get_cuda_render_rgba(&width, &height);
-    if (rgba == NULL) {
-        return 0;
-    }
 
     snprintf(
         title,
         sizeof(title),
-        "Milky Way Preview | step=%d t=%.3f fps=%.1f",
+        "Milky Way Preview | step=%d t=%.3f fps=%.1f mode=%s",
         step,
         simulation_time,
-        fps);
+        fps,
+        mode_name);
 
     snprintf(
         hud_text,
         sizeof(hud_text),
-        "step=%d  t=%.3f  fps=%.1f  exp=%.2f  gamma=%.2f  fov=%.1f  zoom=%.2f  speed=%.2fx",
+        "step=%d  t=%.3f  fps=%.1f  mode=%s  exp=%.2f  gamma=%.2f  fov=%.1f  zoom=%.2f  speed=%.2fx",
         step,
         simulation_time,
         fps,
+        mode_name,
         render_exposure,
         render_gamma,
         interactive->fov,
@@ -399,6 +417,10 @@ int main(int argc, char **argv)
     float next_snapshot_time = 0.0f;
     float simulation_time = 0.0f;
     float preview_fps = 0.0f;
+#ifdef USE_CUDA
+    RenderTelemetry last_telemetry = {0, 0.0f, 0.0f};
+    CudaRenderMode selected_render_mode = CUDA_RENDER_MODE_RAYTRACE;
+#endif
 #ifdef _WIN32
     LARGE_INTEGER fps_frequency = {0};
     LARGE_INTEGER fps_last_counter = {0};
@@ -456,6 +478,14 @@ int main(int argc, char **argv)
         if (strncmp(argv[arg_index], "--data=", 7) == 0) {
             data_file_path = argv[arg_index] + 7;
         }
+#ifdef USE_CUDA
+        if (strcmp(argv[arg_index], "--render-mode") == 0 && arg_index + 1 < argc) {
+            selected_render_mode = parse_render_mode(argv[arg_index + 1]);
+        }
+        if (strncmp(argv[arg_index], "--render-mode=", 14) == 0) {
+            selected_render_mode = parse_render_mode(argv[arg_index] + 14);
+        }
+#endif
     }
 
     apply_camera_profile(camera_profile, &interactive);
@@ -499,10 +529,20 @@ int main(int argc, char **argv)
 
         render_enabled = initialize_cuda_renderer(num_bodies, render_width, render_height);
         if (render_enabled) {
+            unsigned int preview_pbo = 0;
+            int pbo_width = 0;
+            int pbo_height = 0;
+
+            set_cuda_render_mode(selected_render_mode);
             if (!initialize_preview_window("Milky Way Preview", render_width, render_height)) {
                 fprintf(stderr, "Preview window initialization failed; continuing without preview.\n");
                 shutdown_cuda_renderer();
                 render_enabled = 0;
+            } else if (get_preview_cuda_pbo(&preview_pbo, &pbo_width, &pbo_height) &&
+                       bind_cuda_render_pbo(preview_pbo, pbo_width, pbo_height)) {
+                printf("Preview path: CUDA-OpenGL PBO interop enabled (%dx%d).\n", pbo_width, pbo_height);
+            } else {
+                printf("Preview path: host copy fallback (no CUDA-OpenGL interop).\n");
             }
         } else {
             fprintf(stderr, "CUDA renderer initialization failed; continuing without preview/render output.\n");
@@ -548,13 +588,19 @@ int main(int argc, char **argv)
                dt);
     }
     if (render_enabled) {
-        printf("CUDA renderer enabled at %dx%d (fov=%.1f exposure=%.2f gamma=%.2f profile=%s)\n",
+         printf("CUDA renderer enabled at %dx%d (fov=%.1f exposure=%.2f gamma=%.2f profile=%s mode=%s)\n",
                render_width,
                render_height,
                interactive.fov,
                render_exposure,
                render_gamma,
-               camera_profile);
+             camera_profile,
+    #ifdef USE_CUDA
+             render_mode_name(selected_render_mode)
+    #else
+             "cpu"
+    #endif
+             );
     }
     print_controls_help();
 
@@ -593,6 +639,14 @@ int main(int argc, char **argv)
                         preview_fps = preview_fps * 0.85f + instant_fps * 0.15f;
                     }
 #endif
+                    get_last_render_telemetry(&last_telemetry);
+                          printf("[Render] step=%d mode=%s visible=%u cull=%.2fms draw=%.2fms fps=%.1f\n",
+                              step,
+                              render_mode_name(get_cuda_render_mode()),
+                              last_telemetry.visible_count,
+                              last_telemetry.cull_ms,
+                              last_telemetry.trace_ms,
+                              preview_fps);
                 }
             }
 #endif
@@ -648,6 +702,14 @@ int main(int argc, char **argv)
                     preview_fps = preview_fps * 0.85f + instant_fps * 0.15f;
                 }
 #endif
+                get_last_render_telemetry(&last_telemetry);
+                  printf("[Render] step=%d mode=%s visible=%u cull=%.2fms draw=%.2fms fps=%.1f\n",
+                      step,
+                      render_mode_name(get_cuda_render_mode()),
+                      last_telemetry.visible_count,
+                      last_telemetry.cull_ms,
+                      last_telemetry.trace_ms,
+                      preview_fps);
             }
         }
 #endif

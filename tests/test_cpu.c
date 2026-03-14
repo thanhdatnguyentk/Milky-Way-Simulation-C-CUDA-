@@ -38,12 +38,14 @@ static void test_allocate_free(void)
     ASSERT_TRUE(ok == 1);
     ASSERT_TRUE(sys.mass   != NULL);
     ASSERT_TRUE(sys.x      != NULL);
+    ASSERT_TRUE(sys.radius != NULL);
     ASSERT_TRUE(sys.lum    != NULL);
     ASSERT_TRUE(sys.absmag != NULL);
     ASSERT_TRUE(sys.ci     != NULL);
 
     free_system(&sys);
     ASSERT_TRUE(sys.mass   == NULL);
+    ASSERT_TRUE(sys.radius == NULL);
     ASSERT_TRUE(sys.lum    == NULL);
     ASSERT_TRUE(sys.absmag == NULL);
     ASSERT_TRUE(sys.ci     == NULL);
@@ -213,6 +215,48 @@ static void test_single_body_zero_acceleration(void)
     free_system(&sys);
 }
 
+static void test_barnes_hut_matches_direct_small_system(void)
+{
+    enum { N = 16 };
+    SystemOfBodies sys = {0};
+    float ax_direct[N], ay_direct[N], az_direct[N];
+    int i;
+
+    allocate_system(&sys, N);
+
+    for (i = 0; i < N; ++i) {
+        float t = (float)i;
+        sys.mass[i] = 0.5f + 0.1f * t;
+        sys.x[i] = cosf(0.37f * t) * (3.0f + 0.15f * t);
+        sys.y[i] = sinf(0.29f * t) * (2.0f + 0.10f * t);
+        sys.z[i] = -1.0f + 0.2f * t;
+        sys.vx[i] = sys.vy[i] = sys.vz[i] = 0.0f;
+        sys.ax[i] = sys.ay[i] = sys.az[i] = 0.0f;
+    }
+
+    compute_accelerations(&sys, N);
+    for (i = 0; i < N; ++i) {
+        ax_direct[i] = sys.ax[i];
+        ay_direct[i] = sys.ay[i];
+        az_direct[i] = sys.az[i];
+    }
+
+    compute_accelerations_bh(&sys, N, 0.5f);
+
+    for (i = 0; i < N; ++i) {
+        float dx = sys.ax[i] - ax_direct[i];
+        float dy = sys.ay[i] - ay_direct[i];
+        float dz = sys.az[i] - az_direct[i];
+        float err_norm = sqrtf(dx * dx + dy * dy + dz * dz);
+        float ref_norm = sqrtf(ax_direct[i] * ax_direct[i] + ay_direct[i] * ay_direct[i] + az_direct[i] * az_direct[i]);
+        float relative_err = err_norm / (ref_norm + 1e-6f);
+
+        ASSERT_TRUE(relative_err < 0.08f);
+    }
+
+    free_system(&sys);
+}
+
 /* -------------------------------------------------------------------------
  * integrate
  * ------------------------------------------------------------------------- */
@@ -321,6 +365,7 @@ int main(void)
 
     RUN_TEST(test_two_body_newton_third_law);
     RUN_TEST(test_single_body_zero_acceleration);
+    RUN_TEST(test_barnes_hut_matches_direct_small_system);
 
     RUN_TEST(test_integrate_updates_pos_and_vel);
 

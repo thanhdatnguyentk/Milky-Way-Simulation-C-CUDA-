@@ -21,6 +21,7 @@ void free_system(SystemOfBodies *system)
     free(system->ax);
     free(system->ay);
     free(system->az);
+    free(system->radius);
     free(system->lum);
     free(system->absmag);
     free(system->ci);
@@ -35,6 +36,7 @@ void free_system(SystemOfBodies *system)
     system->ax     = NULL;
     system->ay     = NULL;
     system->az     = NULL;
+    system->radius = NULL;
     system->lum    = NULL;
     system->absmag = NULL;
     system->ci     = NULL;
@@ -52,13 +54,14 @@ int allocate_system(SystemOfBodies *system, int num_bodies)
     system->ax     = (float *)malloc((size_t)num_bodies * sizeof(float));
     system->ay     = (float *)malloc((size_t)num_bodies * sizeof(float));
     system->az     = (float *)malloc((size_t)num_bodies * sizeof(float));
+    system->radius = (float *)malloc((size_t)num_bodies * sizeof(float));
     system->lum    = (float *)malloc((size_t)num_bodies * sizeof(float));
     system->absmag = (float *)malloc((size_t)num_bodies * sizeof(float));
     system->ci     = (float *)malloc((size_t)num_bodies * sizeof(float));
 
     if (!system->mass || !system->x || !system->y || !system->z || !system->vx ||
         !system->vy || !system->vz || !system->ax || !system->ay || !system->az ||
-        !system->lum || !system->absmag || !system->ci) {
+        !system->radius || !system->lum || !system->absmag || !system->ci) {
         free_system(system);
         return 0;
     }
@@ -86,6 +89,7 @@ void initialize_system(SystemOfBodies *system, int num_bodies)
         system->ax[index]     = 0.0f;
         system->ay[index]     = 0.0f;
         system->az[index]     = 0.0f;
+        system->radius[index] = 0.1f;
         system->lum[index]    = 1.0f;
         system->absmag[index] = 0.0f;
         system->ci[index]     = 0.0f;

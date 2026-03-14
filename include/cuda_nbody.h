@@ -16,6 +16,24 @@ int sync_cuda_system_to_host(SystemOfBodies *system, int num_bodies);
 int initialize_cuda_renderer(int max_bodies, int width, int height);
 void shutdown_cuda_renderer(void);
 int render_current_frame_cuda(const RenderCamera *camera, float exposure, float gamma);
+int bind_cuda_render_pbo(unsigned int pbo, int width, int height);
+void unbind_cuda_render_pbo(void);
+
+typedef enum {
+	CUDA_RENDER_MODE_RAYTRACE = 0,
+	CUDA_RENDER_MODE_RASTER = 1
+} CudaRenderMode;
+
+int set_cuda_render_mode(CudaRenderMode mode);
+CudaRenderMode get_cuda_render_mode(void);
+
+typedef struct {
+    unsigned int visible_count;
+    float cull_ms;
+    float trace_ms;
+} RenderTelemetry;
+
+void get_last_render_telemetry(RenderTelemetry *out);
 int write_current_render_png(const char *output_path);
 const unsigned char *get_cuda_render_rgba(int *width, int *height);
 int render_frame_cuda(

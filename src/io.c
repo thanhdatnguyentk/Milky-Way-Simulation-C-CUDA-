@@ -399,6 +399,13 @@ int load_hyg_csv(const char *file_path, SystemOfBodies *system, int *num_bodies_
         system->ci[index]     = ci;
         /* Derive mass from luminosity: M ~ L^(1/3.5) for main-sequence stars */
         system->mass[index]   = (lum > 0.0f) ? (float)pow((double)lum, 1.0 / 3.5) : 1.0f;
+        system->radius[index] = (float)pow((double)system->mass[index], 1.0 / 3.0);
+        if (system->radius[index] < 0.02f) {
+            system->radius[index] = 0.02f;
+        }
+        if (system->radius[index] > 2.5f) {
+            system->radius[index] = 2.5f;
+        }
 
         index++;
     }

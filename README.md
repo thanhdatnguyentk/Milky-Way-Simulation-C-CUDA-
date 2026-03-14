@@ -1,17 +1,20 @@
 ## Milky Way Galaxy Simulation (C & CUDA)
 
-Đây là dự án mô phỏng hệ đa hạt (N-body simulation) hướng tới bài toán tái hiện chuyển động của các thiên thể trong thiên hà Milky Way bằng C và CUDA. Mục tiêu dài hạn là vừa đảm bảo mô phỏng đúng về mặt vật lý, vừa tận dụng GPU để tăng hiệu năng.
+Đây là dự án mô phỏng hệ đa hạt (N-body simulation) tái hiện chuyển động các thiên thể trong Milky Way bằng C và CUDA. Hiện tại codebase đã có cả đường CPU và GPU persistent, có preview realtime trên Windows, và có hai chế độ render GPU (`raytrace` và `raster`) để cân bằng chất lượng/hiệu năng.
 
-Ở thời điểm hiện tại, dự án đã có bản baseline N-body trên CPU và đã được tách thành các module `system`, `simulation`, `io`. README này mô tả trạng thái hiện tại của codebase, phạm vi MVP, và lộ trình triển khai tiếp theo.
+README này mô tả trạng thái hiện tại của codebase và cách build/chạy đúng với pipeline render mới.
 
 ## Trạng thái hiện tại
 
-- Đã có cấu trúc `SystemOfBodies` để lưu thông tin khối lượng, vị trí, vận tốc và gia tốc của các hạt.
-- Đã có bản baseline trên CPU gồm: cấp phát bộ nhớ, khởi tạo dữ liệu ngẫu nhiên, tính gia tốc hấp dẫn, cập nhật trạng thái theo bước thời gian và in snapshot kiểm tra.
-- Đã có xuất snapshot dạng series trong thư mục `output/` gồm: `series_meta.json`, `snapshots_index.csv`, và các frame `frame_XXXXXX.csv` phục vụ trực quan hóa/hậu xử lý.
-- Mã nguồn đã được tách module thành `main.c`, `src/system.c`, `src/simulation.c`, `src/io.c` và các header tương ứng trong `include/`.
-- Đã có đường chạy CUDA tùy chọn cho bước tính gia tốc, có thể bật bằng backend `gpu` nếu build đúng toolchain.
-- Chưa có nạp dataset thực tế.
+- Đã có cấu trúc `SystemOfBodies` theo SoA: `mass`, `x/y/z`, `vx/vy/vz`, `ax/ay/az`, `radius`, `lum`, `absmag`, `ci`.
+- Đã có solver CPU direct O(N²) và Barnes-Hut O(N log N) để tăng hiệu năng khi cần.
+- Đã có đường GPU persistent cho simulation (`initialize_cuda_simulation` + `step_cuda_simulation`) để tránh upload lặp lại mỗi frame.
+- Đã có renderer GPU với 2 mode:
+	- `raytrace`: ray-sphere intersection trên tập sao đã frustum-cull.
+	- `raster`: Gaussian splat glow với perspective attenuation và tone mapping.
+- Đã có telemetry render theo frame: `visible_count`, `cull_ms`, `draw/trace_ms`, `fps`.
+- Đã có preview realtime trên Windows và hỗ trợ CUDA-OpenGL PBO interop (zero-copy path cho hiển thị khi khả dụng).
+- Đã hỗ trợ nạp dataset thực từ CSV (`--data data/hyg_v42.csv`).
 
 ## Mục tiêu dự án
 
@@ -160,10 +163,10 @@ Tiêu chí hoàn thành:
 
 ## Công việc ưu tiên tiếp theo
 
-1. Chuẩn hóa dữ liệu đầu vào thay cho khởi tạo ngẫu nhiên hoàn toàn.
-2. Thêm so sánh kết quả CPU và GPU trên cùng input để kiểm chứng sai số.
-3. Bổ sung kiểm tra năng lượng hoặc động lượng để đánh giá độ ổn định số.
-4. Tối ưu đường chạy CUDA để giảm chi phí cấp phát và copy bộ nhớ mỗi bước.
+1. Giảm thêm chi phí present path bằng cách render trực tiếp vào resource interop (bỏ bước copy RGBA phụ trong GPU).
+2. Tối ưu kernel `raster` ở scene dày (tile/binning để giảm atomic contention).
+3. Bổ sung benchmark chuẩn theo nhiều bucket (`N=512`, `N=5k`, `N=50k`) cho cả `raytrace` và `raster`.
+4. Tăng coverage test cho chất lượng ảnh (độ sáng theo depth, mapping màu theo `ci`) và stability run dài.
 
 ## Cách chạy phiên bản hiện tại
 
@@ -187,7 +190,7 @@ build_cpu.bat
 build_gpu.bat
 ```
 
-Script này hiện dùng `nvcc` từ CUDA 12.4 và ép host compiler về MSVC toolset `14.44` để tránh lỗi tương thích với toolchain Insiders mới hơn.
+Script này dùng `nvcc` từ CUDA 12.4 và ép host compiler về MSVC toolset `14.44`. Bản GPU hiện link thêm `opengl32.lib` cho preview/interp path.
 
 ### Biên dịch với GCC hoặc Clang
 
@@ -203,10 +206,10 @@ clang -Wall -Wextra -Iinclude main.c src/system.c src/simulation.c src/io.c -lm 
 
 ### Chạy chương trình
 
-Chương trình hiện tại nhận tối đa 12 tham số dòng lệnh và 2 cờ tùy chọn:
+Chương trình hiện tại nhận tối đa 12 tham số vị trí và các cờ mở rộng:
 
 ```text
-simulation [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_time_interval] [render_width] [render_height] [fov] [exposure] [gamma] [camera_profile] [--clear-output] [--infinite] [--data <csv_path>]
+simulation [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_time_interval] [render_width] [render_height] [fov] [exposure] [gamma] [camera_profile] [--render-mode <raytrace|raster>] [--clear-output] [--infinite] [--data <csv_path>]
 ```
 
 Ý nghĩa:
@@ -222,6 +225,7 @@ simulation [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_t
 - `exposure`: hệ số độ sáng cho tone mapping render. Mặc định `1.25`.
 - `gamma`: hệ số gamma correction. Mặc định `2.2`.
 - `camera_profile`: preset camera khởi tạo. Hỗ trợ `default`, `top`, `side`, `isometric`.
+- `--render-mode <raytrace|raster>`: chọn renderer GPU. Mặc định `raytrace`.
 - `--clear-output`: xóa toàn bộ file cũ trong thư mục `output/` trước khi bắt đầu run mới.
 - `--infinite`: ép chạy mô phỏng vô hạn (ghi đè `num_steps`).
 - `--data <csv_path>`: nạp dữ liệu thiên văn từ file CSV (ví dụ `data/hyg_v42.csv`) để mô phỏng toàn bộ dataset thay vì khởi tạo ngẫu nhiên.
@@ -235,6 +239,8 @@ simulation_gpu.exe 512 1000 0.01 20 gpu 0.1
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric
 simulation_gpu.exe 512 inf 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --clear-output
+simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raytrace
+simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raster
 simulation_gpu.exe 1 1 0.01 1 gpu 0.1 640 360 70 1.2 2.2 default --clear-output --data data/hyg_v42.csv --infinite
 ```
 
@@ -259,17 +265,19 @@ Hiện tại chương trình sẽ:
 - In ra trạng thái của một vài vật thể mẫu ở các mốc bước thời gian.
 - Tạo thư mục `output/` nếu chưa tồn tại.
 - Ghi snapshot legacy dạng `output/step_XXXX.csv` và series dạng `output/frame_XXXXXX.csv` kèm `output/series_meta.json`, `output/snapshots_index.csv` để phục vụ pipeline trực quan hóa/hậu xử lý.
-- Khi chạy GPU, render thêm PNG sequence dạng `output/render_XXXXXX.png` bằng CUDA raster kernel, dùng camera realtime hiện tại và ánh xạ màu theo `ci`, độ sáng theo `lum`.
-- Khi chạy GPU, mở thêm cửa sổ preview realtime trên Windows để camera thay đổi là thấy ngay frame trên màn hình.
-- Đường GPU hiện dùng persistent simulation buffers dùng chung cho compute và render, giúp giảm upload lặp lại và tăng FPS so với đường tách rời trước đó.
-- Preview window có HUD overlay realtime gồm: `step`, `time`, `FPS`, `exposure`, `gamma`, `FOV`, `zoom`, `time_scale`.
+- Khi chạy GPU, render PNG sequence dạng `output/render_XXXXXX.png` theo mode hiện tại (`raytrace` hoặc `raster`).
+- Khi chạy GPU, mở cửa sổ preview realtime trên Windows; nếu khả dụng sẽ bật CUDA-OpenGL PBO interop để giảm copy host-side cho đường hiển thị.
+- Đường GPU dùng persistent simulation buffers dùng chung cho compute/render để giảm upload lặp lại và tăng FPS.
+- Preview/HUD hiển thị realtime: `step`, `time`, `FPS`, `mode`, `exposure`, `gamma`, `FOV`, `zoom`, `time_scale`.
+- Console telemetry in theo frame: `[Render] step=... mode=... visible=... cull=...ms draw=...ms fps=...`.
 
 ## Yêu cầu môi trường dự kiến
 
-- Trình biên dịch C: GCC hoặc Clang.
-- CUDA Toolkit: dùng khi bắt đầu giai đoạn GPU.
-- Hệ điều hành: Linux hoặc Windows đều khả thi, miễn có toolchain phù hợp.
+- Windows + MSVC toolchain (script hiện tại đã cấu hình cho môi trường này).
+- CUDA Toolkit 12.x (đang dùng 12.4).
+- GPU NVIDIA hỗ trợ CUDA.
+- OpenGL runtime (Windows `opengl32.dll`) cho preview interop path.
 
 ## Ghi chú
 
-README cũ mô tả nhiều tính năng nâng cao như ray tracing và dựng hình 720p theo thời gian thực. Những mục đó vẫn có thể là định hướng dài hạn, nhưng chưa nên coi là phạm vi triển khai ngay lúc này. Thứ tự hợp lý là: đúng vật lý trước, mô-đun hóa sau, tăng tốc GPU tiếp theo, rồi mới đến trực quan hóa.
+Project đã vượt phạm vi baseline ban đầu: đã có dataset real, preview realtime, raytrace/raster renderer, benchmark/test GPU mở rộng, và interop path để tối ưu hiển thị. Các phase tiếp theo tập trung vào tối ưu sâu và mở rộng chất lượng hình ảnh hơn là xây lại nền tảng.

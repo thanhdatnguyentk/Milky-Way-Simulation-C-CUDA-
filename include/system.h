@@ -10,6 +10,7 @@ typedef struct {
     float *x, *y, *z;
     float *vx, *vy, *vz;
     float *ax, *ay, *az;
+    float *radius; /* render-space star radius */
     float *lum;    /* luminosity in solar units (used to derive mass) */
     float *absmag; /* absolute magnitude (brightness) */
     float *ci;     /* color index B-V (star color) */
