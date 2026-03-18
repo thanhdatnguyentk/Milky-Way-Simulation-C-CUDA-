@@ -33,6 +33,18 @@ $GlobalConfig = @{
     DataFile        = "data/hyg_v42.csv"
 }
 
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $scriptDir
+$resolvedExePath = if ([System.IO.Path]::IsPathRooted($SimExePath)) {
+    $SimExePath
+} else {
+    Join-Path $projectRoot $SimExePath
+}
+
+if (!(Test-Path $resolvedExePath)) {
+    throw "Cannot find simulation executable: $resolvedExePath"
+}
+
 # Ensure output directory exists
 if (!(Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
@@ -52,6 +64,8 @@ Write-Host "  Resolution: $($GlobalConfig.RenderWidth)x$($GlobalConfig.RenderHei
 Write-Host "  Data: $($GlobalConfig.DataFile)"
 Write-Host "  Output dir: $OutputDir"
 Write-Host ""
+Write-Host "Starting benchmark execution..." -ForegroundColor Cyan
+Write-Host ""
 
 # Function to run single benchmark
 function Run-Benchmark {
@@ -61,45 +75,44 @@ function Run-Benchmark {
         [int]$Steps
     )
 
-    Write-Host "▶ Running benchmark: N=$N ($BucketName), Steps=$Steps" -ForegroundColor Green
+    Write-Host "[*] Running benchmark: N=$N ($BucketName), Steps=$Steps" -ForegroundColor Green
     
     $LogFile = Join-Path $OutputDir "bench_${BucketName}_n${N}.log"
     $TempLogFile = Join-Path $env:TEMP "bench_${BucketName}_$([System.Diagnostics.Process]::GetCurrentProcess().Id)_$(Get-Random).log"
     
     # Build command line
     $CmdArgs = @(
-        $N,
-        $Steps,
-        $GlobalConfig.DT,
-        $GlobalConfig.OutputInterval,
+        "$N",
+        "$Steps",
+        "$($GlobalConfig.DT)",
+        "$($GlobalConfig.OutputInterval)",
         "gpu",
         "0",
-        $GlobalConfig.RenderWidth,
-        $GlobalConfig.RenderHeight,
-        $GlobalConfig.FOV,
-        $GlobalConfig.Exposure,
-        $GlobalConfig.Gamma,
+        "$($GlobalConfig.RenderWidth)",
+        "$($GlobalConfig.RenderHeight)",
+        "$($GlobalConfig.FOV)",
+        "$($GlobalConfig.Exposure)",
+        "$($GlobalConfig.Gamma)",
         $GlobalConfig.CameraProfile,
         "--clear-output",
-        "--render-mode"
+        "--render-mode",
         $GlobalConfig.RenderMode
-        "--data"
-        $GlobalConfig.DataFile
     )
+
+    if ($BucketName -eq "xlarge" -and (Test-Path (Join-Path $projectRoot $GlobalConfig.DataFile))) {
+        $CmdArgs += @("--data", $GlobalConfig.DataFile)
+    }
     
     try {
-        # Run simulation and capture output
-        $proc = Start-Process -FilePath $SimExePath `
-            -ArgumentList $CmdArgs `
-            -NoNewWindow `
-            -RedirectStandardOutput $TempLogFile `
-            -RedirectStandardError $TempLogFile `
-            -PassThru
-        
-        $proc.WaitForExit()
-        
-        if ($proc.ExitCode -ne 0) {
-            Write-Host "  ✗ Benchmark failed (exit code: $($proc.ExitCode))" -ForegroundColor Red
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        Push-Location $projectRoot
+        & $resolvedExePath @CmdArgs *> $TempLogFile
+        $exitCode = $LASTEXITCODE
+        Pop-Location
+        $stopwatch.Stop()
+
+        if ($exitCode -ne 0) {
+            Write-Host "  [FAIL] Benchmark failed (exit code: $exitCode)" -ForegroundColor Red
             return $null
         }
         
@@ -112,22 +125,25 @@ function Run-Benchmark {
         if ($metrics) {
             $metrics.N = $N
             $metrics.BucketName = $BucketName
+            $metrics.Steps = $Steps
             $metrics.Timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+            $elapsedSec = [Math]::Max(0.001, $stopwatch.Elapsed.TotalSeconds)
+            $metrics.StepsPerSec = $Steps / $elapsedSec
             
-            Write-Host "  ✓ Completed" -ForegroundColor Green
-            Write-Host "    Steps/sec: $([math]::Round($metrics.StepsPerSec, 2))" -ForegroundColor Cyan
-            Write-Host "    FPS: $([math]::Round($metrics.FpsAvg, 3))" -ForegroundColor Cyan
-            Write-Host "    Draw time: $([math]::Round($metrics.DrawMsAvg, 3)) ms" -ForegroundColor Cyan
-            Write-Host "    Visible count: $($metrics.VisibleCountAvg)" -ForegroundColor Cyan
+            Write-Host "  [OK] Completed" -ForegroundColor Green
+            Write-Host "       Steps/sec: $([math]::Round($metrics.StepsPerSec, 2))" -ForegroundColor Cyan
+            Write-Host "       FPS: $([math]::Round($metrics.FpsAvg, 3))" -ForegroundColor Cyan
+            Write-Host "       Draw time: $([math]::Round($metrics.DrawMsAvg, 3)) ms" -ForegroundColor Cyan
+            Write-Host "       Visible count: $($metrics.VisibleCountAvg)" -ForegroundColor Cyan
             
             return $metrics
         } else {
-            Write-Host "  ✗ Failed to parse telemetry" -ForegroundColor Red
+            Write-Host "  [PARSE ERROR] Failed to parse telemetry" -ForegroundColor Red
             return $null
         }
         
     } catch {
-        Write-Host "  ✗ Error: $_" -ForegroundColor Red
+        Write-Host "  [ERROR] $_" -ForegroundColor Red
         return $null
     } finally {
         Remove-Item -Path $TempLogFile -Force -ErrorAction SilentlyContinue
@@ -181,13 +197,13 @@ function Parse-TelemetryLog {
             DrawMsAvg        = ($measureFrames.DrawMs | Measure-Object -Average).Average
             FpsAvg           = ($measureFrames.Fps | Measure-Object -Average).Average
             VisibleCountAvg  = ($measureFrames.Visible | Measure-Object -Average).Average
-            StepsPerSec      = 0  # Will be computed based on total steps and duration
+            StepsPerSec      = 0
         }
         
         return $metrics
         
     } catch {
-        Write-Host "    Parse error: $_" -ForegroundColor Yellow
+        Write-Host "    [Parse Warning] $_" -ForegroundColor Yellow
         return $null
     }
 }
@@ -197,16 +213,16 @@ Write-Host "Starting benchmark runs..." -ForegroundColor Yellow
 Write-Host ""
 
 foreach ($bucket in $BenchmarkBuckets) {
+    Write-Host ""
     $result = Run-Benchmark -N $bucket.N -BucketName $bucket.Name -Steps $bucket.Steps
     
     if ($result) {
         $AllResults += $result
     }
-    
-    Write-Host ""
 }
 
 # Generate summary report
+Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Benchmark Results Summary" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -229,7 +245,7 @@ $report = @"
 "@
 
 foreach ($result in $AllResults) {
-    $report += "`n| $($result.N) | $($result.BucketName) | ? | $($result.FrameCount) | $([math]::Round($result.FpsAvg, 3)) | $([math]::Round($result.DrawMsAvg, 3)) | $([math]::Round($result.VisibleCountAvg, 0)) |"
+    $report += "`n| $($result.N) | $($result.BucketName) | $($result.Steps) | $($result.FrameCount) | $([math]::Round($result.FpsAvg, 3)) | $([math]::Round($result.DrawMsAvg, 3)) | $([math]::Round($result.CullMsAvg, 3)) | $([math]::Round($result.VisibleCountAvg, 0)) |"
 }
 
 $report += @"
@@ -244,6 +260,7 @@ foreach ($result in $AllResults) {
 ### N = $($result.N) ($($result.BucketName))
 
 - **Frames measured**: $($result.FrameCount)
+- **Steps per second**: $([math]::Round($result.StepsPerSec, 3))
 - **FPS (average)**: $([math]::Round($result.FpsAvg, 3))
 - **Draw time (avg)**: $([math]::Round($result.DrawMsAvg, 3)) ms
 - **Cull time (avg)**: $([math]::Round($result.CullMsAvg, 3)) ms
@@ -274,13 +291,13 @@ $report += @"
 
 Set-Content -Path $ReportFile -Value $report -Encoding UTF8
 
-Write-Host "✓ Report generated: $ReportFile" -ForegroundColor Green
+Write-Host "[OK] Report generated: $ReportFile" -ForegroundColor Green
 Write-Host ""
 
 # Export raw metrics as JSON for further analysis
 $JsonFile = Join-Path $OutputDir "phase0_baseline_metrics.json"
 $AllResults | ConvertTo-Json | Set-Content -Path $JsonFile -Encoding UTF8
-Write-Host "✓ Metrics exported: $JsonFile" -ForegroundColor Green
+Write-Host "[OK] Metrics exported: $JsonFile" -ForegroundColor Green
 
 # Summary
 $ElapsedTime = (Get-Date) - $StartTime
