@@ -201,6 +201,23 @@ Dự án đang triển khai ba hướng chính để nâng khả năng scale và
 - Thay Forward Euler bằng Leapfrog Kick-Drift-Kick trên CPU/GPU
 - Giữ fallback Euler, thêm test invariants (energy/momentum drift)
 
+### Xác minh Phase 1 (Euler vs Leapfrog)
+
+Chạy script so sánh drift:
+
+```text
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\compare_integrator_drift.ps1 -NumBodies 512 -NumSteps 800 -Dt 0.01 -OutputInterval 100 -Backend gpu
+```
+
+Kết quả gần nhất (GPU, N=512, 800 steps):
+- Delta Energy: Euler `0.900586%` vs Leapfrog `0.046144%`
+- Center of Mass Drift: Euler `0.382517` vs Leapfrog `0.007404`
+- Energy-drift reduction factor: `19.517x`
+
+Output được ghi ra:
+- `data/phase1_integrator_comparison.md`
+- `data/phase1_integrator_comparison.json`
+
 **Phase 2A (Tuần 2–4, song song 2B)**: CUDA Barnes-Hut
 - Linear octree (Morton ordering + device node pool)
 - Kernel: build tree, mass aggregation, force traversal (theta criterion)
