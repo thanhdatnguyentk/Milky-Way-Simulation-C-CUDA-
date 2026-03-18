@@ -195,6 +195,30 @@ static void test_gpu_integrator_mode_switch(void)
     ASSERT_TRUE(get_cuda_integrator_mode() == INTEGRATOR_LEAPFROG);
 }
 
+static void test_gpu_solver_mode_switch(void)
+{
+    int ok;
+
+    ok = set_cuda_solver_mode(SOLVER_DIRECT);
+    ASSERT_TRUE(ok == 1);
+    ASSERT_TRUE(get_cuda_solver_mode() == SOLVER_DIRECT);
+
+    ok = set_cuda_solver_mode(SOLVER_BH);
+    ASSERT_TRUE(ok == 1);
+    ASSERT_TRUE(get_cuda_solver_mode() == SOLVER_BH);
+
+    ok = set_cuda_solver_mode(SOLVER_FMM);
+    ASSERT_TRUE(ok == 1);
+    ASSERT_TRUE(get_cuda_solver_mode() == SOLVER_FMM);
+
+    ok = set_cuda_solver_theta(0.65f);
+    ASSERT_TRUE(ok == 1);
+    ASSERT_TRUE(fabsf(get_cuda_solver_theta() - 0.65f) < 1e-6f);
+
+    ok = set_cuda_solver_mode(SOLVER_DIRECT);
+    ASSERT_TRUE(ok == 1);
+}
+
 /* Verify GPU accelerations match CPU for N=64 bodies with identical inputs. */
 static void test_gpu_accelerations_match_cpu(void)
 {
@@ -668,6 +692,7 @@ int main(void)
 
     RUN_TEST(test_cuda_device_available);
     RUN_TEST(test_gpu_integrator_mode_switch);
+    RUN_TEST(test_gpu_solver_mode_switch);
     RUN_TEST(test_gpu_accelerations_match_cpu);
     RUN_TEST(test_gpu_benchmark_two_sizes);
     RUN_TEST(test_gpu_no_nan_after_steps);

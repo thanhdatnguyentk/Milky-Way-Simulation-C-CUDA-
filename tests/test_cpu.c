@@ -424,6 +424,33 @@ static void test_integrate_leapfrog_refreshes_acceleration(void)
     free_system(&sys);
 }
 
+static void test_solver_mode_set_get_and_advance(void)
+{
+    SystemOfBodies sys = {0};
+
+    set_solver_mode(SOLVER_DIRECT);
+    ASSERT_TRUE(get_solver_mode() == SOLVER_DIRECT);
+
+    set_solver_mode(SOLVER_BH);
+    ASSERT_TRUE(get_solver_mode() == SOLVER_BH);
+
+    set_solver_theta(0.7f);
+    ASSERT_TRUE(fabsf(get_solver_theta() - 0.7f) < 1e-6f);
+
+    allocate_system(&sys, 8);
+    initialize_system(&sys, 8);
+
+    set_integrator_mode(INTEGRATOR_EULER);
+    set_solver_mode(SOLVER_BH);
+    advance_simulation(&sys, 8, 0.001f);
+
+    ASSERT_TRUE(isfinite(sys.x[1]));
+    ASSERT_TRUE(isfinite(sys.vx[1]));
+
+    set_solver_mode(SOLVER_DIRECT);
+    free_system(&sys);
+}
+
 /* -------------------------------------------------------------------------
  * write_snapshot_csv
  * ------------------------------------------------------------------------- */
@@ -511,6 +538,7 @@ int main(void)
 
     RUN_TEST(test_integrate_updates_pos_and_vel);
     RUN_TEST(test_integrate_leapfrog_refreshes_acceleration);
+    RUN_TEST(test_solver_mode_set_get_and_advance);
 
     RUN_TEST(test_write_snapshot_creates_file);
     RUN_TEST(test_write_snapshot_series_files);

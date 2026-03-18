@@ -23,6 +23,8 @@ static OctreeNode *g_octree_pool = NULL;
 static int g_octree_pool_capacity = 0;
 static int g_octree_pool_used = 0;
 static IntegratorMode g_integrator_mode = INTEGRATOR_LEAPFROG;
+static SolverMode g_solver_mode = SOLVER_DIRECT;
+static float g_solver_theta = 0.5f;
 
 static int node_is_leaf(const OctreeNode *node)
 {
@@ -429,7 +431,7 @@ void integrate(SystemOfBodies *system, int num_bodies, float dt)
             system->z[index] += system->vz[index] * dt;
         }
 
-        compute_accelerations(system, num_bodies);
+        compute_accelerations_selected(system, num_bodies);
 
         for (index = 0; index < num_bodies; ++index) {
             system->vx[index] += system->ax[index] * half_dt;
@@ -460,6 +462,51 @@ void set_integrator_mode(IntegratorMode mode)
 IntegratorMode get_integrator_mode(void)
 {
     return g_integrator_mode;
+}
+
+void set_solver_mode(SolverMode mode)
+{
+    if (mode == SOLVER_DIRECT || mode == SOLVER_BH || mode == SOLVER_FMM) {
+        g_solver_mode = mode;
+    }
+}
+
+SolverMode get_solver_mode(void)
+{
+    return g_solver_mode;
+}
+
+void set_solver_theta(float theta)
+{
+    if (theta > 0.0f) {
+        g_solver_theta = theta;
+    }
+}
+
+float get_solver_theta(void)
+{
+    return g_solver_theta;
+}
+
+void compute_accelerations_selected(SystemOfBodies *system, int num_bodies)
+{
+    if (g_solver_mode == SOLVER_BH) {
+        compute_accelerations_bh(system, num_bodies, g_solver_theta);
+        return;
+    }
+
+    if (g_solver_mode == SOLVER_FMM) {
+        compute_accelerations(system, num_bodies);
+        return;
+    }
+
+    compute_accelerations(system, num_bodies);
+}
+
+void advance_simulation(SystemOfBodies *system, int num_bodies, float dt)
+{
+    compute_accelerations_selected(system, num_bodies);
+    integrate(system, num_bodies, dt);
 }
 
 void compute_accelerations_bh(SystemOfBodies *system, int num_bodies, float theta)

@@ -95,6 +95,8 @@ function Run-Benchmark {
         "$($GlobalConfig.Gamma)",
         $GlobalConfig.CameraProfile,
         "--clear-output",
+        "--solver",
+        "direct",
         "--integrator",
         "euler",
         "--render-mode",

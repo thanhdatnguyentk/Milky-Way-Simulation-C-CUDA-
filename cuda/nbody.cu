@@ -46,6 +46,8 @@ static int g_renderer_height = 0;
 static int g_renderer_capacity = 0;
 static CudaRenderMode g_render_mode = CUDA_RENDER_MODE_RAYTRACE;
 static IntegratorMode g_cuda_integrator_mode = INTEGRATOR_LEAPFROG;
+static SolverMode g_cuda_solver_mode = SOLVER_DIRECT;
+static float g_cuda_solver_theta = 0.5f;
 
 static RenderTelemetry g_last_telemetry = {0, 0.0f, 0.0f};
 
@@ -904,6 +906,11 @@ extern "C" int step_cuda_simulation(SystemOfBodies *system, int num_bodies, floa
 
     grid_size = (num_bodies + NBODY_BLOCK_SIZE - 1) / NBODY_BLOCK_SIZE;
 
+    if (g_cuda_solver_mode == SOLVER_BH || g_cuda_solver_mode == SOLVER_FMM) {
+        /* Phase 2 scaffold: BH/FMM mode currently falls back to direct CUDA path. */
+        (void)g_cuda_solver_theta;
+    }
+
     compute_accelerations_kernel<<<grid_size, NBODY_BLOCK_SIZE>>>(
         g_sim_mass,
         g_sim_x,
@@ -986,6 +993,36 @@ extern "C" int set_cuda_integrator_mode(IntegratorMode mode)
 extern "C" IntegratorMode get_cuda_integrator_mode(void)
 {
     return g_cuda_integrator_mode;
+}
+
+extern "C" int set_cuda_solver_mode(SolverMode mode)
+{
+    if (mode != SOLVER_DIRECT && mode != SOLVER_BH && mode != SOLVER_FMM) {
+        return 0;
+    }
+
+    g_cuda_solver_mode = mode;
+    return 1;
+}
+
+extern "C" SolverMode get_cuda_solver_mode(void)
+{
+    return g_cuda_solver_mode;
+}
+
+extern "C" int set_cuda_solver_theta(float theta)
+{
+    if (theta <= 0.0f) {
+        return 0;
+    }
+
+    g_cuda_solver_theta = theta;
+    return 1;
+}
+
+extern "C" float get_cuda_solver_theta(void)
+{
+    return g_cuda_solver_theta;
 }
 
 extern "C" int initialize_cuda_renderer(int max_bodies, int width, int height)

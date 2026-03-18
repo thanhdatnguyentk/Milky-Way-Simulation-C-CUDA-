@@ -281,7 +281,7 @@ clang -Wall -Wextra -Iinclude main.c src/system.c src/simulation.c src/io.c -lm 
 Chương trình hiện tại nhận tối đa 12 tham số vị trí và các cờ mở rộng:
 
 ```text
-simulation[_cpu|_gpu].exe [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_time_interval] [render_width] [render_height] [fov] [exposure] [gamma] [camera_profile] [--render-mode <raytrace|raster>] [--integrator <leapfrog|euler>] [--clear-output] [--infinite] [--data <csv_path>]
+simulation[_cpu|_gpu].exe [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_time_interval] [render_width] [render_height] [fov] [exposure] [gamma] [camera_profile] [--render-mode <raytrace|raster>] [--integrator <leapfrog|euler>] [--solver <direct|bh|fmm>] [--theta <value>] [--clear-output] [--infinite] [--data <csv_path>]
 ```
 
 Ý nghĩa:
@@ -299,6 +299,8 @@ simulation[_cpu|_gpu].exe [num_bodies] [num_steps] [dt] [output_interval] [backe
 - `camera_profile`: preset camera khởi tạo. Hỗ trợ `default`, `top`, `side`, `isometric`.
 - `--render-mode <raytrace|raster>`: chọn renderer GPU. Mặc định `raytrace`.
 - `--integrator <leapfrog|euler>`: chọn bộ tích phân thời gian cho CPU/GPU. Mặc định `leapfrog`, dùng `euler` khi cần đối chiếu baseline.
+- `--solver <direct|bh|fmm>`: chọn solver hấp dẫn. Mặc định `direct`. CPU hỗ trợ `bh`; `fmm` đang ở mức scaffold fallback.
+- `--theta <value>`: tham số mở góc cho Barnes-Hut (mặc định `0.5`).
 - `--clear-output`: xóa toàn bộ file cũ trong thư mục `output/` trước khi bắt đầu run mới.
 - `--infinite`: ép chạy mô phỏng vô hạn (ghi đè `num_steps`).
 - `--data <csv_path>`: nạp dữ liệu thiên văn từ file CSV (ví dụ `data/hyg_v42.csv`) để mô phỏng toàn bộ dataset thay vì khởi tạo ngẫu nhiên.
@@ -316,6 +318,8 @@ simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --rend
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raster
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raster --integrator leapfrog
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raster --integrator euler
+simulation_cpu.exe 512 1000 0.01 20 cpu 0.1 1280 720 75 1.4 2.0 isometric --solver bh --theta 0.6 --integrator leapfrog
+simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --solver direct --integrator leapfrog
 simulation_gpu.exe 1 1 0.01 1 gpu 0.1 1280 720  70 1.2 2.2 default --clear-output --data data/hyg_v42.csv --infinite --render-mode raster
 build_gpu.bat
 simulation_gpu.exe 32 inf 0.01 2 gpu 0.02 1280 720  70 1.2 2.2 default --clear-output --data data/hyg_v42.csv --render-mode raster

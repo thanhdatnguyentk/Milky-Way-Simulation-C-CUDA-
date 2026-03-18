@@ -322,6 +322,31 @@ static const char *integrator_mode_name(IntegratorMode mode)
     return (mode == INTEGRATOR_EULER) ? "euler" : "leapfrog";
 }
 
+static SolverMode parse_solver_mode(const char *value)
+{
+    if (value != NULL) {
+        if (strcmp(value, "bh") == 0 || strcmp(value, "barnes-hut") == 0 || strcmp(value, "barneshut") == 0) {
+            return SOLVER_BH;
+        }
+        if (strcmp(value, "fmm") == 0) {
+            return SOLVER_FMM;
+        }
+    }
+
+    return SOLVER_DIRECT;
+}
+
+static const char *solver_mode_name(SolverMode mode)
+{
+    if (mode == SOLVER_BH) {
+        return "bh";
+    }
+    if (mode == SOLVER_FMM) {
+        return "fmm";
+    }
+    return "direct";
+}
+
 #ifdef USE_CUDA
 static CudaRenderMode parse_render_mode(const char *value)
 {
@@ -432,6 +457,8 @@ int main(int argc, char **argv)
     float simulation_time = 0.0f;
     float preview_fps = 0.0f;
     IntegratorMode selected_integrator_mode = INTEGRATOR_LEAPFROG;
+    SolverMode selected_solver_mode = SOLVER_DIRECT;
+    float selected_solver_theta = 0.5f;
 #ifdef USE_CUDA
     RenderTelemetry last_telemetry = {0, 0.0f, 0.0f};
     CudaRenderMode selected_render_mode = CUDA_RENDER_MODE_RAYTRACE;
@@ -499,6 +526,18 @@ int main(int argc, char **argv)
         if (strncmp(argv[arg_index], "--integrator=", 13) == 0) {
             selected_integrator_mode = parse_integrator_mode(argv[arg_index] + 13);
         }
+        if (strcmp(argv[arg_index], "--solver") == 0 && arg_index + 1 < argc) {
+            selected_solver_mode = parse_solver_mode(argv[arg_index + 1]);
+        }
+        if (strncmp(argv[arg_index], "--solver=", 9) == 0) {
+            selected_solver_mode = parse_solver_mode(argv[arg_index] + 9);
+        }
+        if (strcmp(argv[arg_index], "--theta") == 0 && arg_index + 1 < argc) {
+            selected_solver_theta = parse_float_arg(argv[arg_index + 1], selected_solver_theta);
+        }
+        if (strncmp(argv[arg_index], "--theta=", 8) == 0) {
+            selected_solver_theta = parse_float_arg(argv[arg_index] + 8, selected_solver_theta);
+        }
 #ifdef USE_CUDA
         if (strcmp(argv[arg_index], "--render-mode") == 0 && arg_index + 1 < argc) {
             selected_render_mode = parse_render_mode(argv[arg_index + 1]);
@@ -517,6 +556,8 @@ int main(int argc, char **argv)
     render_exposure = clamp_float(render_exposure, 0.05f, 20.0f);
     render_gamma = clamp_float(render_gamma, 0.5f, 4.0f);
     set_integrator_mode(selected_integrator_mode);
+    set_solver_mode(selected_solver_mode);
+    set_solver_theta(selected_solver_theta);
 
     if (data_file_path != NULL) {
         if (!load_hyg_csv(data_file_path, &system, &num_bodies)) {
@@ -598,18 +639,22 @@ int main(int argc, char **argv)
     }
 
     if (num_steps < 0) {
-         printf("Running %s N-body baseline with %d bodies, infinite steps, dt=%.4f (integrator=%s)\n",
+                 printf("Running %s N-body baseline with %d bodies, infinite steps, dt=%.4f (integrator=%s solver=%s theta=%.2f)\n",
                use_gpu ? "GPU" : "CPU",
                num_bodies,
              dt,
-             integrator_mode_name(selected_integrator_mode));
+                         integrator_mode_name(selected_integrator_mode),
+                         solver_mode_name(selected_solver_mode),
+                         selected_solver_theta);
     } else {
-         printf("Running %s N-body baseline with %d bodies, %d steps, dt=%.4f (integrator=%s)\n",
+                 printf("Running %s N-body baseline with %d bodies, %d steps, dt=%.4f (integrator=%s solver=%s theta=%.2f)\n",
                use_gpu ? "GPU" : "CPU",
                num_bodies,
                num_steps,
              dt,
-             integrator_mode_name(selected_integrator_mode));
+                         integrator_mode_name(selected_integrator_mode),
+                         solver_mode_name(selected_solver_mode),
+                         selected_solver_theta);
     }
     if (render_enabled) {
          printf("CUDA renderer enabled at %dx%d (fov=%.1f exposure=%.2f gamma=%.2f profile=%s mode=%s)\n",
@@ -631,6 +676,22 @@ int main(int argc, char **argv)
     if (use_gpu) {
         if (!set_cuda_integrator_mode(selected_integrator_mode)) {
             fprintf(stderr, "Failed to configure CUDA integrator mode.\n");
+            shutdown_preview_window();
+            shutdown_cuda_renderer();
+            shutdown_cuda_simulation();
+            free_system(&system);
+            return EXIT_FAILURE;
+        }
+        if (!set_cuda_solver_mode(selected_solver_mode)) {
+            fprintf(stderr, "Failed to configure CUDA solver mode.\n");
+            shutdown_preview_window();
+            shutdown_cuda_renderer();
+            shutdown_cuda_simulation();
+            free_system(&system);
+            return EXIT_FAILURE;
+        }
+        if (!set_cuda_solver_theta(selected_solver_theta)) {
+            fprintf(stderr, "Failed to configure CUDA solver theta.\n");
             shutdown_preview_window();
             shutdown_cuda_renderer();
             shutdown_cuda_simulation();
@@ -706,8 +767,7 @@ int main(int argc, char **argv)
                 return EXIT_FAILURE;
             }
         } else {
-            compute_accelerations(&system, num_bodies);
-            integrate(&system, num_bodies, effective_dt);
+            advance_simulation(&system, num_bodies, effective_dt);
         }
 #else
         if (use_gpu) {
@@ -715,8 +775,7 @@ int main(int argc, char **argv)
             free_system(&system);
             return EXIT_FAILURE;
         }
-        compute_accelerations(&system, num_bodies);
-        integrate(&system, num_bodies, effective_dt);
+        advance_simulation(&system, num_bodies, effective_dt);
 #endif
         simulation_time += effective_dt;
 

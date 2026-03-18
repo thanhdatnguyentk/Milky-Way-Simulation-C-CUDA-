@@ -29,6 +29,10 @@ int set_cuda_render_mode(CudaRenderMode mode);
 CudaRenderMode get_cuda_render_mode(void);
 int set_cuda_integrator_mode(IntegratorMode mode);
 IntegratorMode get_cuda_integrator_mode(void);
+int set_cuda_solver_mode(SolverMode mode);
+SolverMode get_cuda_solver_mode(void);
+int set_cuda_solver_theta(float theta);
+float get_cuda_solver_theta(void);
 
 typedef struct {
     unsigned int visible_count;

@@ -174,6 +174,7 @@ function Run-Scenario {
             2.2 `
             default `
             --clear-output `
+            --solver direct `
             --render-mode raster `
             --integrator $Integrator *> $null
 
