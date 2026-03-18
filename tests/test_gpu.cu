@@ -219,6 +219,42 @@ static void test_gpu_solver_mode_switch(void)
     ASSERT_TRUE(ok == 1);
 }
 
+static void test_gpu_bh_solver_mode_step_runs(void)
+{
+    const int N = 128;
+    const int STEPS = 5;
+    SystemOfBodies sys = {0};
+    int ok;
+
+    allocate_system(&sys, N);
+    fill_deterministic(&sys, N);
+
+    ok = initialize_cuda_simulation(&sys, N);
+    ASSERT_TRUE(ok == 1);
+
+    ok = set_cuda_solver_mode(SOLVER_BH);
+    ASSERT_TRUE(ok == 1);
+    ok = set_cuda_solver_theta(0.6f);
+    ASSERT_TRUE(ok == 1);
+    ok = set_cuda_integrator_mode(INTEGRATOR_LEAPFROG);
+    ASSERT_TRUE(ok == 1);
+
+    for (int step = 0; step < STEPS; ++step) {
+        ok = step_cuda_simulation(&sys, N, 0.001f, 0);
+        ASSERT_TRUE(ok == 1);
+    }
+
+    ok = sync_cuda_system_to_host(&sys, N);
+    ASSERT_TRUE(ok == 1);
+    ASSERT_TRUE(!has_nan_or_inf(&sys, N));
+
+    ok = set_cuda_solver_mode(SOLVER_DIRECT);
+    ASSERT_TRUE(ok == 1);
+
+    shutdown_cuda_simulation();
+    free_system(&sys);
+}
+
 /* Verify GPU accelerations match CPU for N=64 bodies with identical inputs. */
 static void test_gpu_accelerations_match_cpu(void)
 {
@@ -693,6 +729,7 @@ int main(void)
     RUN_TEST(test_cuda_device_available);
     RUN_TEST(test_gpu_integrator_mode_switch);
     RUN_TEST(test_gpu_solver_mode_switch);
+    RUN_TEST(test_gpu_bh_solver_mode_step_runs);
     RUN_TEST(test_gpu_accelerations_match_cpu);
     RUN_TEST(test_gpu_benchmark_two_sizes);
     RUN_TEST(test_gpu_no_nan_after_steps);

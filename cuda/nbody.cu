@@ -896,19 +896,30 @@ extern "C" int sync_cuda_system_to_host(SystemOfBodies *system, int num_bodies)
     return 1;
 }
 
-extern "C" int step_cuda_simulation(SystemOfBodies *system, int num_bodies, float dt, int sync_to_host)
+static int compute_accelerations_selected_cuda(SystemOfBodies *system, int num_bodies, int grid_size)
 {
-    int grid_size;
+    if (g_cuda_solver_mode == SOLVER_BH) {
+        if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+            return 0;
+        }
 
-    if (system == NULL || num_bodies <= 0 || g_sim_capacity < num_bodies || g_sim_num_bodies != num_bodies) {
-        return 0;
+        if (!sync_cuda_system_to_host(system, num_bodies)) {
+            return 0;
+        }
+
+        compute_accelerations_bh(system, num_bodies, g_cuda_solver_theta);
+
+        if (cudaMemcpy(g_sim_ax, system->ax, (size_t)num_bodies * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
+            cudaMemcpy(g_sim_ay, system->ay, (size_t)num_bodies * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
+            cudaMemcpy(g_sim_az, system->az, (size_t)num_bodies * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess) {
+            return 0;
+        }
+
+        return 1;
     }
 
-    grid_size = (num_bodies + NBODY_BLOCK_SIZE - 1) / NBODY_BLOCK_SIZE;
-
-    if (g_cuda_solver_mode == SOLVER_BH || g_cuda_solver_mode == SOLVER_FMM) {
-        /* Phase 2 scaffold: BH/FMM mode currently falls back to direct CUDA path. */
-        (void)g_cuda_solver_theta;
+    if (g_cuda_solver_mode == SOLVER_FMM) {
+        /* Phase 2A: FMM still falls back to direct CUDA path until Phase 2B kernels land. */
     }
 
     compute_accelerations_kernel<<<grid_size, NBODY_BLOCK_SIZE>>>(
@@ -920,6 +931,23 @@ extern "C" int step_cuda_simulation(SystemOfBodies *system, int num_bodies, floa
         g_sim_ay,
         g_sim_az,
         num_bodies);
+
+    return 1;
+}
+
+extern "C" int step_cuda_simulation(SystemOfBodies *system, int num_bodies, float dt, int sync_to_host)
+{
+    int grid_size;
+
+    if (system == NULL || num_bodies <= 0 || g_sim_capacity < num_bodies || g_sim_num_bodies != num_bodies) {
+        return 0;
+    }
+
+    grid_size = (num_bodies + NBODY_BLOCK_SIZE - 1) / NBODY_BLOCK_SIZE;
+
+    if (!compute_accelerations_selected_cuda(system, num_bodies, grid_size)) {
+        return 0;
+    }
 
     if (g_cuda_integrator_mode == INTEGRATOR_LEAPFROG) {
         integrate_kick_drift_kernel<<<grid_size, 256>>>(
@@ -935,15 +963,9 @@ extern "C" int step_cuda_simulation(SystemOfBodies *system, int num_bodies, floa
             num_bodies,
             dt);
 
-        compute_accelerations_kernel<<<grid_size, NBODY_BLOCK_SIZE>>>(
-            g_sim_mass,
-            g_sim_x,
-            g_sim_y,
-            g_sim_z,
-            g_sim_ax,
-            g_sim_ay,
-            g_sim_az,
-            num_bodies);
+        if (!compute_accelerations_selected_cuda(system, num_bodies, grid_size)) {
+            return 0;
+        }
 
         integrate_kick_finish_kernel<<<grid_size, 256>>>(
             g_sim_vx,

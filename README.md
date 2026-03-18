@@ -8,7 +8,7 @@ README này mô tả trạng thái hiện tại của codebase và cách build/c
 
 - Đã có cấu trúc `SystemOfBodies` theo SoA: `mass`, `x/y/z`, `vx/vy/vz`, `ax/ay/az`, `radius`, `lum`, `absmag`, `ci`.
 - **Solver CPU**: Direct O(N²) + Barnes-Hut O(N log N) octree được triển khai đầy đủ.
-- **Solver GPU**: Direct O(N²) via shared-memory tiling (tối ưu CameraKernelParams precompute). Barnes-Hut/FMM đang phát triển Phase 2A–2B.
+- **Solver GPU**: Direct O(N²) via shared-memory tiling (tối ưu CameraKernelParams precompute). Phase 2A đã có mode `bh` chạy theo bridge path (sync + CPU BH + upload accel), FMM vẫn ở scaffold fallback.
 - **Integrator**: Đã hỗ trợ 2 mode trên CPU+GPU: `leapfrog` (mặc định) và `euler` (fallback để đối chiếu).
 - **Memory**: Hiện tại explicit `cudaMalloc/cudaMemcpy`. Unified Memory Phase 3.
 - Đã có đường GPU persistent cho simulation (`initialize_cuda_simulation` + `step_cuda_simulation`) để tránh upload lặp lại mỗi frame.
