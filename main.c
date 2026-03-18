@@ -308,6 +308,20 @@ static int is_gpu_backend(const char *value)
     return strcmp(value, "gpu") == 0 || strcmp(value, "cuda") == 0;
 }
 
+static IntegratorMode parse_integrator_mode(const char *value)
+{
+    if (value != NULL && (strcmp(value, "euler") == 0 || strcmp(value, "forward-euler") == 0)) {
+        return INTEGRATOR_EULER;
+    }
+
+    return INTEGRATOR_LEAPFROG;
+}
+
+static const char *integrator_mode_name(IntegratorMode mode)
+{
+    return (mode == INTEGRATOR_EULER) ? "euler" : "leapfrog";
+}
+
 #ifdef USE_CUDA
 static CudaRenderMode parse_render_mode(const char *value)
 {
@@ -417,6 +431,7 @@ int main(int argc, char **argv)
     float next_snapshot_time = 0.0f;
     float simulation_time = 0.0f;
     float preview_fps = 0.0f;
+    IntegratorMode selected_integrator_mode = INTEGRATOR_LEAPFROG;
 #ifdef USE_CUDA
     RenderTelemetry last_telemetry = {0, 0.0f, 0.0f};
     CudaRenderMode selected_render_mode = CUDA_RENDER_MODE_RAYTRACE;
@@ -478,6 +493,12 @@ int main(int argc, char **argv)
         if (strncmp(argv[arg_index], "--data=", 7) == 0) {
             data_file_path = argv[arg_index] + 7;
         }
+        if (strcmp(argv[arg_index], "--integrator") == 0 && arg_index + 1 < argc) {
+            selected_integrator_mode = parse_integrator_mode(argv[arg_index + 1]);
+        }
+        if (strncmp(argv[arg_index], "--integrator=", 13) == 0) {
+            selected_integrator_mode = parse_integrator_mode(argv[arg_index] + 13);
+        }
 #ifdef USE_CUDA
         if (strcmp(argv[arg_index], "--render-mode") == 0 && arg_index + 1 < argc) {
             selected_render_mode = parse_render_mode(argv[arg_index + 1]);
@@ -495,6 +516,7 @@ int main(int argc, char **argv)
     interactive.fov = clamp_float(interactive.fov, 20.0f, 120.0f);
     render_exposure = clamp_float(render_exposure, 0.05f, 20.0f);
     render_gamma = clamp_float(render_gamma, 0.5f, 4.0f);
+    set_integrator_mode(selected_integrator_mode);
 
     if (data_file_path != NULL) {
         if (!load_hyg_csv(data_file_path, &system, &num_bodies)) {
@@ -576,16 +598,18 @@ int main(int argc, char **argv)
     }
 
     if (num_steps < 0) {
-        printf("Running %s N-body baseline with %d bodies, infinite steps, dt=%.4f\n",
+         printf("Running %s N-body baseline with %d bodies, infinite steps, dt=%.4f (integrator=%s)\n",
                use_gpu ? "GPU" : "CPU",
                num_bodies,
-               dt);
+             dt,
+             integrator_mode_name(selected_integrator_mode));
     } else {
-        printf("Running %s N-body baseline with %d bodies, %d steps, dt=%.4f\n",
+         printf("Running %s N-body baseline with %d bodies, %d steps, dt=%.4f (integrator=%s)\n",
                use_gpu ? "GPU" : "CPU",
                num_bodies,
                num_steps,
-               dt);
+             dt,
+             integrator_mode_name(selected_integrator_mode));
     }
     if (render_enabled) {
          printf("CUDA renderer enabled at %dx%d (fov=%.1f exposure=%.2f gamma=%.2f profile=%s mode=%s)\n",
@@ -602,6 +626,19 @@ int main(int argc, char **argv)
     #endif
              );
     }
+
+#ifdef USE_CUDA
+    if (use_gpu) {
+        if (!set_cuda_integrator_mode(selected_integrator_mode)) {
+            fprintf(stderr, "Failed to configure CUDA integrator mode.\n");
+            shutdown_preview_window();
+            shutdown_cuda_renderer();
+            shutdown_cuda_simulation();
+            free_system(&system);
+            return EXIT_FAILURE;
+        }
+    }
+#endif
     print_controls_help();
 
     for (step = 0; num_steps < 0 || step < num_steps;) {

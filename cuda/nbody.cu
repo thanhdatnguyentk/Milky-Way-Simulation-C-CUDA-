@@ -45,6 +45,7 @@ static int g_renderer_width = 0;
 static int g_renderer_height = 0;
 static int g_renderer_capacity = 0;
 static CudaRenderMode g_render_mode = CUDA_RENDER_MODE_RAYTRACE;
+static IntegratorMode g_cuda_integrator_mode = INTEGRATOR_LEAPFROG;
 
 static RenderTelemetry g_last_telemetry = {0, 0.0f, 0.0f};
 
@@ -60,6 +61,17 @@ static RenderTelemetry g_last_telemetry = {0, 0.0f, 0.0f};
 #define RASTER_MIN_RADIUS_PX 1.0f
 #define RASTER_MAX_RADIUS_PX 12.0f
 #define RASTER_DEPTH_ATTEN 0.00035f
+#define NBODY_BLOCK_SIZE 256
+
+typedef struct {
+    float3 cam_pos;
+    float3 right;
+    float3 up;
+    float3 forward;
+    float tan_half_fov_x;
+    float tan_half_fov_y;
+    float focal_y;
+} CameraKernelParams;
 
 __host__ __device__ static float saturate_float(float value)
 {
@@ -143,50 +155,83 @@ __host__ __device__ static void compute_camera_basis(RenderCamera camera, float3
 }
 
 __global__ static void compute_accelerations_kernel(
-    const float *mass,
-    const float *x,
-    const float *y,
-    const float *z,
-    float *ax,
-    float *ay,
-    float *az,
+    const float *__restrict__ mass,
+    const float *__restrict__ x,
+    const float *__restrict__ y,
+    const float *__restrict__ z,
+    float *__restrict__ ax,
+    float *__restrict__ ay,
+    float *__restrict__ az,
     int num_bodies)
 {
-    int body_index = blockIdx.x * blockDim.x + threadIdx.x;
+    int tid = threadIdx.x;
+    int body_index = blockIdx.x * blockDim.x + tid;
     float local_ax = 0.0f;
     float local_ay = 0.0f;
     float local_az = 0.0f;
-    int other_index;
+    float x_i;
+    float y_i;
+    float z_i;
+
+    __shared__ float sh_x[NBODY_BLOCK_SIZE];
+    __shared__ float sh_y[NBODY_BLOCK_SIZE];
+    __shared__ float sh_z[NBODY_BLOCK_SIZE];
+    __shared__ float sh_mass[NBODY_BLOCK_SIZE];
 
     if (body_index >= num_bodies) {
         return;
     }
 
-    for (other_index = 0; other_index < num_bodies; ++other_index) {
-        float dx;
-        float dy;
-        float dz;
-        float distance_squared;
-        float inverse_distance;
-        float inverse_distance_cubed;
-        float scale;
+    x_i = x[body_index];
+    y_i = y[body_index];
+    z_i = z[body_index];
 
-        if (body_index == other_index) {
-            continue;
+    for (int tile_base = 0; tile_base < num_bodies; tile_base += NBODY_BLOCK_SIZE) {
+        int other_index = tile_base + tid;
+        int tile_count = num_bodies - tile_base;
+
+        if (tile_count > NBODY_BLOCK_SIZE) {
+            tile_count = NBODY_BLOCK_SIZE;
         }
 
-        dx = x[other_index] - x[body_index];
-        dy = y[other_index] - y[body_index];
-        dz = z[other_index] - z[body_index];
+        if (other_index < num_bodies) {
+            sh_x[tid] = x[other_index];
+            sh_y[tid] = y[other_index];
+            sh_z[tid] = z[other_index];
+            sh_mass[tid] = mass[other_index];
+        }
 
-        distance_squared = dx * dx + dy * dy + dz * dz + SOFTENING_EPS2;
-        inverse_distance = rsqrtf(distance_squared);
-        inverse_distance_cubed = inverse_distance * inverse_distance * inverse_distance;
-        scale = G_CONSTANT * mass[other_index] * inverse_distance_cubed;
+        __syncthreads();
 
-        local_ax += dx * scale;
-        local_ay += dy * scale;
-        local_az += dz * scale;
+        for (int j = 0; j < tile_count; ++j) {
+            int global_other = tile_base + j;
+            float dx;
+            float dy;
+            float dz;
+            float distance_squared;
+            float inverse_distance;
+            float inverse_distance_cubed;
+            float scale;
+
+            if (global_other == body_index) {
+                continue;
+            }
+
+            dx = sh_x[j] - x_i;
+            dy = sh_y[j] - y_i;
+            dz = sh_z[j] - z_i;
+
+            distance_squared = dx * dx + dy * dy + dz * dz + SOFTENING_EPS2;
+            inverse_distance = rsqrtf(distance_squared);
+            inverse_distance_cubed = inverse_distance * inverse_distance * inverse_distance;
+            scale = G_CONSTANT * sh_mass[j] * inverse_distance_cubed;
+
+            local_ax = fmaf(dx, scale, local_ax);
+            local_ay = fmaf(dy, scale, local_ay);
+            local_az = fmaf(dz, scale, local_az);
+        }
+
+        __syncthreads();
     }
 
     ax[body_index] = local_ax;
@@ -220,6 +265,60 @@ __global__ static void integrate_kernel(
     x[body_index] += vx[body_index] * dt;
     y[body_index] += vy[body_index] * dt;
     z[body_index] += vz[body_index] * dt;
+}
+
+__global__ static void integrate_kick_drift_kernel(
+    float *x,
+    float *y,
+    float *z,
+    float *vx,
+    float *vy,
+    float *vz,
+    const float *ax,
+    const float *ay,
+    const float *az,
+    int num_bodies,
+    float dt)
+{
+    int body_index = blockIdx.x * blockDim.x + threadIdx.x;
+    float half_dt;
+
+    if (body_index >= num_bodies) {
+        return;
+    }
+
+    half_dt = 0.5f * dt;
+
+    vx[body_index] += ax[body_index] * half_dt;
+    vy[body_index] += ay[body_index] * half_dt;
+    vz[body_index] += az[body_index] * half_dt;
+
+    x[body_index] += vx[body_index] * dt;
+    y[body_index] += vy[body_index] * dt;
+    z[body_index] += vz[body_index] * dt;
+}
+
+__global__ static void integrate_kick_finish_kernel(
+    float *vx,
+    float *vy,
+    float *vz,
+    const float *ax,
+    const float *ay,
+    const float *az,
+    int num_bodies,
+    float dt)
+{
+    int body_index = blockIdx.x * blockDim.x + threadIdx.x;
+    float half_dt;
+
+    if (body_index >= num_bodies) {
+        return;
+    }
+
+    half_dt = 0.5f * dt;
+    vx[body_index] += ax[body_index] * half_dt;
+    vy[body_index] += ay[body_index] * half_dt;
+    vz[body_index] += az[body_index] * half_dt;
 }
 
 __global__ static void compute_star_radius_kernel(
@@ -267,42 +366,30 @@ __global__ static void frustum_cull_spheres_kernel(
     const float *z,
     const float *radius,
     int num_bodies,
-    RenderCamera camera,
-    float aspect,
+    CameraKernelParams cam,
     float near_plane,
     float far_plane,
     int *visible_indices,
     unsigned int *visible_count)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    float3 right;
-    float3 up;
-    float3 forward;
-    float tan_half_fov_y;
-    float tan_half_fov_x;
 
     if (i >= num_bodies) {
         return;
     }
 
-    compute_camera_basis(camera, &right, &up, &forward);
-
-    tan_half_fov_y = tanf(0.5f * camera.fov * DEG_TO_RAD) / fmaxf(camera.zoom, 0.1f);
-    tan_half_fov_x = tan_half_fov_y * aspect;
-
     {
-        float3 cam_pos = make_float3(camera.x, camera.y, camera.z);
         float3 body_pos = make_float3(x[i], y[i], z[i]);
-        float3 rel = sub3(body_pos, cam_pos);
-        float cx = dot3(rel, right);
-        float cy = dot3(rel, up);
-        float cz = dot3(rel, forward);
+        float3 rel = sub3(body_pos, cam.cam_pos);
+        float cx = dot3(rel, cam.right);
+        float cy = dot3(rel, cam.up);
+        float cz = dot3(rel, cam.forward);
         float r = radius[i];
 
-        float plane_left = cx + cz * tan_half_fov_x;
-        float plane_right = -cx + cz * tan_half_fov_x;
-        float plane_bottom = cy + cz * tan_half_fov_y;
-        float plane_top = -cy + cz * tan_half_fov_y;
+        float plane_left = cx + cz * cam.tan_half_fov_x;
+        float plane_right = -cx + cz * cam.tan_half_fov_x;
+        float plane_bottom = cy + cz * cam.tan_half_fov_y;
+        float plane_top = -cy + cz * cam.tan_half_fov_y;
         float plane_near = cz - near_plane;
         float plane_far = far_plane - cz;
 
@@ -329,7 +416,7 @@ __global__ static void raytrace_spheres_kernel(
     int visible_count,
     int width,
     int height,
-    RenderCamera camera,
+    CameraKernelParams cam,
     float exposure,
     float gamma,
     unsigned char *rgba)
@@ -342,23 +429,15 @@ __global__ static void raytrace_spheres_kernel(
     }
 
     {
-        float3 right;
-        float3 up;
-        float3 forward;
-        float aspect = (float)width / (float)height;
-        float tan_half_fov_y = tanf(0.5f * camera.fov * DEG_TO_RAD) / fmaxf(camera.zoom, 0.1f);
-        float tan_half_fov_x = tan_half_fov_y * aspect;
         float x_ndc = 2.0f * ((float)px + 0.5f) / (float)width - 1.0f;
         float y_ndc = 1.0f - 2.0f * ((float)py + 0.5f) / (float)height;
-        float3 ray_origin = make_float3(camera.x, camera.y, camera.z);
-        float3 ray_dir_cam = normalize3(make_float3(x_ndc * tan_half_fov_x, y_ndc * tan_half_fov_y, 1.0f));
+        float3 ray_origin = cam.cam_pos;
+        float3 ray_dir_cam = normalize3(make_float3(x_ndc * cam.tan_half_fov_x, y_ndc * cam.tan_half_fov_y, 1.0f));
         float3 ray_dir;
         float t_best = 1e30f;
         int hit_index = -1;
 
-        compute_camera_basis(camera, &right, &up, &forward);
-
-        ray_dir = normalize3(add3(add3(mul3(right, ray_dir_cam.x), mul3(up, ray_dir_cam.y)), mul3(forward, ray_dir_cam.z)));
+        ray_dir = normalize3(add3(add3(mul3(cam.right, ray_dir_cam.x), mul3(cam.up, ray_dir_cam.y)), mul3(cam.forward, ray_dir_cam.z)));
 
         for (int k = 0; k < visible_count; ++k) {
             int star_idx = visible_indices[k];
@@ -440,35 +519,25 @@ __global__ static void rasterize_stars_kernel(
     int visible_count,
     int width,
     int height,
-    RenderCamera camera,
+    CameraKernelParams cam,
     float exposure,
     float *accum_r,
     float *accum_g,
     float *accum_b)
 {
     int star_list_index = blockIdx.x * blockDim.x + threadIdx.x;
-    float3 right;
-    float3 up;
-    float3 forward;
-    float tan_half_fov_y;
-    float focal_y;
 
     if (star_list_index >= visible_count) {
         return;
     }
 
-    compute_camera_basis(camera, &right, &up, &forward);
-    tan_half_fov_y = tanf(0.5f * camera.fov * DEG_TO_RAD) / fmaxf(camera.zoom, 0.1f);
-    focal_y = (0.5f * (float)height) / fmaxf(tan_half_fov_y, 1e-6f);
-
     {
         int star_idx = visible_indices[star_list_index];
-        float3 cam_pos = make_float3(camera.x, camera.y, camera.z);
         float3 body_pos = make_float3(x[star_idx], y[star_idx], z[star_idx]);
-        float3 rel = sub3(body_pos, cam_pos);
-        float cx = dot3(rel, right);
-        float cy = dot3(rel, up);
-        float cz = dot3(rel, forward);
+        float3 rel = sub3(body_pos, cam.cam_pos);
+        float cx = dot3(rel, cam.right);
+        float cy = dot3(rel, cam.up);
+        float cz = dot3(rel, cam.forward);
         float depth;
         float screen_x;
         float screen_y;
@@ -490,10 +559,10 @@ __global__ static void rasterize_stars_kernel(
         }
 
         depth = cz;
-        screen_x = (float)width * 0.5f + (cx / depth) * focal_y;
-        screen_y = (float)height * 0.5f - (cy / depth) * focal_y;
+        screen_x = (float)width * 0.5f + (cx / depth) * cam.focal_y;
+        screen_y = (float)height * 0.5f - (cy / depth) * cam.focal_y;
 
-        radius_px = RASTER_RADIUS_SCALE_PX * (radius[star_idx] * focal_y / fmaxf(depth, 1e-6f));
+        radius_px = RASTER_RADIUS_SCALE_PX * (radius[star_idx] * cam.focal_y / fmaxf(depth, 1e-6f));
         radius_px = fminf(RASTER_MAX_RADIUS_PX, fmaxf(RASTER_MIN_RADIUS_PX, radius_px));
         sigma = fmaxf(0.75f, 0.5f * radius_px);
         sigma2 = sigma * sigma;
@@ -685,7 +754,7 @@ extern "C" int compute_accelerations_cuda(SystemOfBodies *system, int num_bodies
     float *device_ax = NULL;
     float *device_ay = NULL;
     float *device_az = NULL;
-    int block_size = 256;
+    int block_size = NBODY_BLOCK_SIZE;
     int grid_size = (num_bodies + block_size - 1) / block_size;
 
     if (!allocate_device_buffer(&device_mass, num_bodies) ||
@@ -776,7 +845,7 @@ extern "C" int initialize_cuda_simulation(const SystemOfBodies *system, int num_
     }
 
     {
-        int grid_size = (num_bodies + 255) / 256;
+        int grid_size = (num_bodies + NBODY_BLOCK_SIZE - 1) / NBODY_BLOCK_SIZE;
         compute_star_radius_kernel<<<grid_size, 256>>>(
             g_sim_mass,
             g_sim_lum,
@@ -833,9 +902,9 @@ extern "C" int step_cuda_simulation(SystemOfBodies *system, int num_bodies, floa
         return 0;
     }
 
-    grid_size = (num_bodies + 255) / 256;
+    grid_size = (num_bodies + NBODY_BLOCK_SIZE - 1) / NBODY_BLOCK_SIZE;
 
-    compute_accelerations_kernel<<<grid_size, 256>>>(
+    compute_accelerations_kernel<<<grid_size, NBODY_BLOCK_SIZE>>>(
         g_sim_mass,
         g_sim_x,
         g_sim_y,
@@ -845,18 +914,53 @@ extern "C" int step_cuda_simulation(SystemOfBodies *system, int num_bodies, floa
         g_sim_az,
         num_bodies);
 
-    integrate_kernel<<<grid_size, 256>>>(
-        g_sim_x,
-        g_sim_y,
-        g_sim_z,
-        g_sim_vx,
-        g_sim_vy,
-        g_sim_vz,
-        g_sim_ax,
-        g_sim_ay,
-        g_sim_az,
-        num_bodies,
-        dt);
+    if (g_cuda_integrator_mode == INTEGRATOR_LEAPFROG) {
+        integrate_kick_drift_kernel<<<grid_size, 256>>>(
+            g_sim_x,
+            g_sim_y,
+            g_sim_z,
+            g_sim_vx,
+            g_sim_vy,
+            g_sim_vz,
+            g_sim_ax,
+            g_sim_ay,
+            g_sim_az,
+            num_bodies,
+            dt);
+
+        compute_accelerations_kernel<<<grid_size, NBODY_BLOCK_SIZE>>>(
+            g_sim_mass,
+            g_sim_x,
+            g_sim_y,
+            g_sim_z,
+            g_sim_ax,
+            g_sim_ay,
+            g_sim_az,
+            num_bodies);
+
+        integrate_kick_finish_kernel<<<grid_size, 256>>>(
+            g_sim_vx,
+            g_sim_vy,
+            g_sim_vz,
+            g_sim_ax,
+            g_sim_ay,
+            g_sim_az,
+            num_bodies,
+            dt);
+    } else {
+        integrate_kernel<<<grid_size, 256>>>(
+            g_sim_x,
+            g_sim_y,
+            g_sim_z,
+            g_sim_vx,
+            g_sim_vy,
+            g_sim_vz,
+            g_sim_ax,
+            g_sim_ay,
+            g_sim_az,
+            num_bodies,
+            dt);
+    }
 
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
         return 0;
@@ -867,6 +971,21 @@ extern "C" int step_cuda_simulation(SystemOfBodies *system, int num_bodies, floa
     }
 
     return 1;
+}
+
+extern "C" int set_cuda_integrator_mode(IntegratorMode mode)
+{
+    if (mode != INTEGRATOR_EULER && mode != INTEGRATOR_LEAPFROG) {
+        return 0;
+    }
+
+    g_cuda_integrator_mode = mode;
+    return 1;
+}
+
+extern "C" IntegratorMode get_cuda_integrator_mode(void)
+{
+    return g_cuda_integrator_mode;
 }
 
 extern "C" int initialize_cuda_renderer(int max_bodies, int width, int height)
@@ -968,6 +1087,7 @@ extern "C" int render_current_frame_cuda(const RenderCamera *camera, float expos
     dim3 block_2d;
     dim3 grid_2d;
     RenderCamera local_camera;
+    CameraKernelParams cam_params;
     float aspect;
     unsigned int visible_count = 0;
 
@@ -1001,9 +1121,18 @@ extern "C" int render_current_frame_cuda(const RenderCamera *camera, float expos
     }
 
     pixel_count = g_renderer_width * g_renderer_height;
-    body_grid_size = (g_sim_num_bodies + 255) / 256;
+    body_grid_size = (g_sim_num_bodies + NBODY_BLOCK_SIZE - 1) / NBODY_BLOCK_SIZE;
     pixel_grid_size = (pixel_count + 255) / 256;
     aspect = (float)g_renderer_width / (float)g_renderer_height;
+
+    {
+        float zoom = fmaxf(local_camera.zoom, 0.1f);
+        compute_camera_basis(local_camera, &cam_params.right, &cam_params.up, &cam_params.forward);
+        cam_params.cam_pos = make_float3(local_camera.x, local_camera.y, local_camera.z);
+        cam_params.tan_half_fov_y = tanf(0.5f * local_camera.fov * DEG_TO_RAD) / zoom;
+        cam_params.tan_half_fov_x = cam_params.tan_half_fov_y * aspect;
+        cam_params.focal_y = (0.5f * (float)g_renderer_height) / fmaxf(cam_params.tan_half_fov_y, 1e-6f);
+    }
 
     {
         cudaEvent_t ev_start;
@@ -1028,14 +1157,13 @@ extern "C" int render_current_frame_cuda(const RenderCamera *camera, float expos
 
         if (timing_ok) { cudaEventRecord(ev_start, g_render_stream); }
 
-        frustum_cull_spheres_kernel<<<body_grid_size, 256, 0, g_render_stream>>>(
+        frustum_cull_spheres_kernel<<<body_grid_size, NBODY_BLOCK_SIZE, 0, g_render_stream>>>(
             g_sim_x,
             g_sim_y,
             g_sim_z,
             g_sim_radius,
             g_sim_num_bodies,
-            local_camera,
-            aspect,
+            cam_params,
             RENDER_NEAR_PLANE,
             RENDER_FAR_PLANE,
             g_visible_indices,
@@ -1069,7 +1197,7 @@ extern "C" int render_current_frame_cuda(const RenderCamera *camera, float expos
                 g_accum_b,
                 pixel_count);
 
-            rasterize_stars_kernel<<<body_grid_size, 256, 0, g_render_stream>>>(
+            rasterize_stars_kernel<<<body_grid_size, NBODY_BLOCK_SIZE, 0, g_render_stream>>>(
                 g_sim_x,
                 g_sim_y,
                 g_sim_z,
@@ -1080,7 +1208,7 @@ extern "C" int render_current_frame_cuda(const RenderCamera *camera, float expos
                 (int)visible_count,
                 g_renderer_width,
                 g_renderer_height,
-                local_camera,
+                cam_params,
                 exposure,
                 g_accum_r,
                 g_accum_g,
@@ -1108,7 +1236,7 @@ extern "C" int render_current_frame_cuda(const RenderCamera *camera, float expos
                 (int)visible_count,
                 g_renderer_width,
                 g_renderer_height,
-                local_camera,
+                cam_params,
                 exposure,
                 gamma,
                 g_device_rgba);

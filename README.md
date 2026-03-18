@@ -9,7 +9,7 @@ README này mô tả trạng thái hiện tại của codebase và cách build/c
 - Đã có cấu trúc `SystemOfBodies` theo SoA: `mass`, `x/y/z`, `vx/vy/vz`, `ax/ay/az`, `radius`, `lum`, `absmag`, `ci`.
 - **Solver CPU**: Direct O(N²) + Barnes-Hut O(N log N) octree được triển khai đầy đủ.
 - **Solver GPU**: Direct O(N²) via shared-memory tiling (tối ưu CameraKernelParams precompute). Barnes-Hut/FMM đang phát triển Phase 2A–2B.
-- **Integrator**: Hiện tại Forward Euler (CPU+GPU). Leapfrog symplectic sẽ triển khai Phase 1.
+- **Integrator**: Đã hỗ trợ 2 mode trên CPU+GPU: `leapfrog` (mặc định) và `euler` (fallback để đối chiếu).
 - **Memory**: Hiện tại explicit `cudaMalloc/cudaMemcpy`. Unified Memory Phase 3.
 - Đã có đường GPU persistent cho simulation (`initialize_cuda_simulation` + `step_cuda_simulation`) để tránh upload lặp lại mỗi frame.
 - Đã có renderer GPU với 2 mode:
@@ -264,7 +264,7 @@ clang -Wall -Wextra -Iinclude main.c src/system.c src/simulation.c src/io.c -lm 
 Chương trình hiện tại nhận tối đa 12 tham số vị trí và các cờ mở rộng:
 
 ```text
-simulation[_cpu|_gpu].exe [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_time_interval] [render_width] [render_height] [fov] [exposure] [gamma] [camera_profile] [--render-mode <raytrace|raster>] [--clear-output] [--infinite] [--data <csv_path>]
+simulation[_cpu|_gpu].exe [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_time_interval] [render_width] [render_height] [fov] [exposure] [gamma] [camera_profile] [--render-mode <raytrace|raster>] [--integrator <leapfrog|euler>] [--clear-output] [--infinite] [--data <csv_path>]
 ```
 
 Ý nghĩa:
@@ -281,6 +281,7 @@ simulation[_cpu|_gpu].exe [num_bodies] [num_steps] [dt] [output_interval] [backe
 - `gamma`: hệ số gamma correction. Mặc định `2.2`.
 - `camera_profile`: preset camera khởi tạo. Hỗ trợ `default`, `top`, `side`, `isometric`.
 - `--render-mode <raytrace|raster>`: chọn renderer GPU. Mặc định `raytrace`.
+- `--integrator <leapfrog|euler>`: chọn bộ tích phân thời gian cho CPU/GPU. Mặc định `leapfrog`, dùng `euler` khi cần đối chiếu baseline.
 - `--clear-output`: xóa toàn bộ file cũ trong thư mục `output/` trước khi bắt đầu run mới.
 - `--infinite`: ép chạy mô phỏng vô hạn (ghi đè `num_steps`).
 - `--data <csv_path>`: nạp dữ liệu thiên văn từ file CSV (ví dụ `data/hyg_v42.csv`) để mô phỏng toàn bộ dataset thay vì khởi tạo ngẫu nhiên.
@@ -296,6 +297,8 @@ simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric
 simulation_gpu.exe 512 inf 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --clear-output
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raytrace
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raster
+simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raster --integrator leapfrog
+simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raster --integrator euler
 simulation_gpu.exe 1 1 0.01 1 gpu 0.1 1280 720  70 1.2 2.2 default --clear-output --data data/hyg_v42.csv --infinite --render-mode raster
 build_gpu.bat
 simulation_gpu.exe 32 inf 0.01 2 gpu 0.02 1280 720  70 1.2 2.2 default --clear-output --data data/hyg_v42.csv --render-mode raster
@@ -344,7 +347,7 @@ Project đã vượt phạm vi baseline ban đầu: dataset real, preview realti
 **Trạng thái hiện tại (Mar 2026)**:
 - GPU direct solver: tối ưu shared-memory tiling, pass 74 GPU tests.
 - Raster path sản xuất (~2ms/frame, 120k stars); raytrace dùng QA (non-scaling).
-- Forward Euler: ổn định ngắn hạn, energy drift dài hạn.
+- Leapfrog (mặc định): giảm energy drift dài hạn; Euler vẫn giữ làm fallback đối chiếu.
 - Explicit memory: hiệu quả hiện tại, sẵn sàng UM migration.
 
 **Phase tiếp theo (tuần 1–8)**:

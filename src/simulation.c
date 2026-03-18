@@ -22,6 +22,7 @@ typedef struct {
 static OctreeNode *g_octree_pool = NULL;
 static int g_octree_pool_capacity = 0;
 static int g_octree_pool_used = 0;
+static IntegratorMode g_integrator_mode = INTEGRATOR_LEAPFROG;
 
 static int node_is_leaf(const OctreeNode *node)
 {
@@ -415,6 +416,29 @@ void integrate(SystemOfBodies *system, int num_bodies, float dt)
 {
     int index;
 
+    if (g_integrator_mode == INTEGRATOR_LEAPFROG) {
+        float half_dt = 0.5f * dt;
+
+        for (index = 0; index < num_bodies; ++index) {
+            system->vx[index] += system->ax[index] * half_dt;
+            system->vy[index] += system->ay[index] * half_dt;
+            system->vz[index] += system->az[index] * half_dt;
+
+            system->x[index] += system->vx[index] * dt;
+            system->y[index] += system->vy[index] * dt;
+            system->z[index] += system->vz[index] * dt;
+        }
+
+        compute_accelerations(system, num_bodies);
+
+        for (index = 0; index < num_bodies; ++index) {
+            system->vx[index] += system->ax[index] * half_dt;
+            system->vy[index] += system->ay[index] * half_dt;
+            system->vz[index] += system->az[index] * half_dt;
+        }
+        return;
+    }
+
     for (index = 0; index < num_bodies; ++index) {
         system->vx[index] += system->ax[index] * dt;
         system->vy[index] += system->ay[index] * dt;
@@ -424,6 +448,18 @@ void integrate(SystemOfBodies *system, int num_bodies, float dt)
         system->y[index] += system->vy[index] * dt;
         system->z[index] += system->vz[index] * dt;
     }
+}
+
+void set_integrator_mode(IntegratorMode mode)
+{
+    if (mode == INTEGRATOR_EULER || mode == INTEGRATOR_LEAPFROG) {
+        g_integrator_mode = mode;
+    }
+}
+
+IntegratorMode get_integrator_mode(void)
+{
+    return g_integrator_mode;
 }
 
 void compute_accelerations_bh(SystemOfBodies *system, int num_bodies, float theta)

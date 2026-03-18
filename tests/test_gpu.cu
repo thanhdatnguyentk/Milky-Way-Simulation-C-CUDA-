@@ -182,6 +182,19 @@ static void test_cuda_device_available(void)
     }
 }
 
+static void test_gpu_integrator_mode_switch(void)
+{
+    int ok;
+
+    ok = set_cuda_integrator_mode(INTEGRATOR_EULER);
+    ASSERT_TRUE(ok == 1);
+    ASSERT_TRUE(get_cuda_integrator_mode() == INTEGRATOR_EULER);
+
+    ok = set_cuda_integrator_mode(INTEGRATOR_LEAPFROG);
+    ASSERT_TRUE(ok == 1);
+    ASSERT_TRUE(get_cuda_integrator_mode() == INTEGRATOR_LEAPFROG);
+}
+
 /* Verify GPU accelerations match CPU for N=64 bodies with identical inputs. */
 static void test_gpu_accelerations_match_cpu(void)
 {
@@ -654,6 +667,7 @@ int main(void)
     }
 
     RUN_TEST(test_cuda_device_available);
+    RUN_TEST(test_gpu_integrator_mode_switch);
     RUN_TEST(test_gpu_accelerations_match_cpu);
     RUN_TEST(test_gpu_benchmark_two_sizes);
     RUN_TEST(test_gpu_no_nan_after_steps);

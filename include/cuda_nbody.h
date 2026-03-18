@@ -3,6 +3,7 @@
 
 #include "system.h"
 #include "renderer.h"
+#include "simulation.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,6 +27,8 @@ typedef enum {
 
 int set_cuda_render_mode(CudaRenderMode mode);
 CudaRenderMode get_cuda_render_mode(void);
+int set_cuda_integrator_mode(IntegratorMode mode);
+IntegratorMode get_cuda_integrator_mode(void);
 
 typedef struct {
     unsigned int visible_count;

@@ -15,6 +15,7 @@
 #include <stdlib.h>
 
 #include "io.h"
+#include "simulation_config.h"
 #include "simulation.h"
 #include "system.h"
 #include "test_framework.h"
@@ -25,6 +26,38 @@
 #define SOL_ABSMAG     4.85f
 #define SOL_CI         0.656f
 #define SOL_LUM        1.0f
+
+static void compute_system_energies(
+    const SystemOfBodies *system,
+    int num_bodies,
+    float gravitational_constant,
+    float softening,
+    float *kinetic_energy,
+    float *potential_energy)
+{
+    float kinetic = 0.0f;
+    float potential = 0.0f;
+
+    for (int i = 0; i < num_bodies; ++i) {
+        float v2 = system->vx[i] * system->vx[i] +
+                   system->vy[i] * system->vy[i] +
+                   system->vz[i] * system->vz[i];
+        kinetic += 0.5f * system->mass[i] * v2;
+    }
+
+    for (int i = 0; i < num_bodies; ++i) {
+        for (int j = i + 1; j < num_bodies; ++j) {
+            float dx = system->x[j] - system->x[i];
+            float dy = system->y[j] - system->y[i];
+            float dz = system->z[j] - system->z[i];
+            float distance_squared = dx * dx + dy * dy + dz * dz + softening;
+            potential -= gravitational_constant * system->mass[i] * system->mass[j] / sqrtf(distance_squared);
+        }
+    }
+
+    *kinetic_energy = kinetic;
+    *potential_energy = potential;
+}
 
 /* -------------------------------------------------------------------------
  * System lifecycle
@@ -68,6 +101,73 @@ static void test_initialize_accelerations_zero(void)
     ASSERT_NEAR(sys.ax[0], 0.0f, 1e-9f);
     ASSERT_NEAR(sys.ay[2], 0.0f, 1e-9f);
     ASSERT_NEAR(sys.az[4], 0.0f, 1e-9f);
+
+    free_system(&sys);
+}
+
+static void test_init_galaxy_disk_sets_central_body_and_tangential_orbits(void)
+{
+    enum { N = 32 };
+    SystemOfBodies sys = {0};
+    const float center_mass = 8000.0f;
+    const float max_radius = 60.0f;
+
+    allocate_system(&sys, N);
+    init_galaxy_disk(&sys, N, center_mass, max_radius);
+
+    ASSERT_NEAR(sys.x[0], 0.0f, 1e-9f);
+    ASSERT_NEAR(sys.y[0], 0.0f, 1e-9f);
+    ASSERT_NEAR(sys.z[0], 0.0f, 1e-9f);
+    ASSERT_NEAR(sys.vx[0], 0.0f, 1e-9f);
+    ASSERT_NEAR(sys.vy[0], 0.0f, 1e-9f);
+    ASSERT_NEAR(sys.vz[0], 0.0f, 1e-9f);
+    ASSERT_NEAR(sys.mass[0], center_mass, 1e-6f);
+
+    for (int i = 1; i < N; ++i) {
+        float r_xy = sqrtf(sys.x[i] * sys.x[i] + sys.y[i] * sys.y[i]);
+        float v_xy = sqrtf(sys.vx[i] * sys.vx[i] + sys.vy[i] * sys.vy[i]);
+        float dot_rv = sys.x[i] * sys.vx[i] + sys.y[i] * sys.vy[i];
+        float expected_speed = sqrtf(G_CONSTANT * center_mass / r_xy);
+
+        ASSERT_TRUE(r_xy > 0.0f);
+        ASSERT_TRUE(r_xy <= max_radius + 1e-3f);
+        ASSERT_NEAR(dot_rv, 0.0f, 1e-3f * r_xy * fmaxf(v_xy, 1.0f));
+        ASSERT_NEAR(v_xy, expected_speed, 1e-3f * expected_speed + 1e-4f);
+        ASSERT_NEAR(sys.mass[i], 1.0f, 1e-6f);
+        ASSERT_TRUE(fabsf(sys.z[i]) <= 0.02f * max_radius + 1e-5f);
+    }
+
+    free_system(&sys);
+}
+
+static void test_apply_virial_theorem_scales_to_equilibrium(void)
+{
+    enum { N = 16 };
+    SystemOfBodies sys = {0};
+    float kinetic_energy;
+    float potential_energy;
+    float virial_residual;
+
+    allocate_system(&sys, N);
+    init_galaxy_disk(&sys, N, 6000.0f, 40.0f);
+
+    for (int i = 1; i < N; ++i) {
+        sys.vx[i] *= 0.35f;
+        sys.vy[i] *= 0.35f;
+        sys.vz[i] *= 0.35f;
+    }
+
+    apply_virial_theorem(&sys, N, G_CONSTANT, SOFTENING_EPS2);
+    compute_system_energies(&sys, N, G_CONSTANT, SOFTENING_EPS2, &kinetic_energy, &potential_energy);
+
+    virial_residual = fabsf(2.0f * kinetic_energy + potential_energy) / fmaxf(fabsf(potential_energy), 1e-6f);
+
+    ASSERT_TRUE(kinetic_energy > 0.0f);
+    ASSERT_TRUE(potential_energy < 0.0f);
+    ASSERT_TRUE(virial_residual < 1e-4f);
+    ASSERT_NEAR(sys.vx[0], 0.0f, 1e-9f);
+    ASSERT_NEAR(sys.vy[0], 0.0f, 1e-9f);
+    ASSERT_NEAR(sys.vz[0], 0.0f, 1e-9f);
 
     free_system(&sys);
 }
@@ -266,6 +366,8 @@ static void test_integrate_updates_pos_and_vel(void)
     SystemOfBodies sys = {0};
     allocate_system(&sys, 1);
 
+    set_integrator_mode(INTEGRATOR_EULER);
+
     sys.x[0]  = 0.0f; sys.y[0]  = 0.0f;  sys.z[0]  = 0.0f;
     sys.vx[0] = 2.0f; sys.vy[0] = -1.0f; sys.vz[0] = 0.5f;
     sys.ax[0] = 1.0f; sys.ay[0] =  0.0f; sys.az[0] = -0.5f;
@@ -281,6 +383,44 @@ static void test_integrate_updates_pos_and_vel(void)
     ASSERT_NEAR(sys.y[0], -0.10f,   1e-5f);
     ASSERT_NEAR(sys.z[0],  0.045f,  1e-5f);
 
+    free_system(&sys);
+}
+
+static void test_integrate_leapfrog_refreshes_acceleration(void)
+{
+    SystemOfBodies sys = {0};
+    float ax_before;
+
+    allocate_system(&sys, 2);
+    set_integrator_mode(INTEGRATOR_LEAPFROG);
+
+    sys.mass[0] = 1.0f;
+    sys.mass[1] = 1.0f;
+
+    sys.x[0] = 0.0f;
+    sys.y[0] = 0.0f;
+    sys.z[0] = 0.0f;
+
+    sys.x[1] = 10.0f;
+    sys.y[1] = 0.0f;
+    sys.z[1] = 0.0f;
+
+    sys.vx[0] = 0.0f;
+    sys.vy[0] = 0.0f;
+    sys.vz[0] = 0.0f;
+    sys.vx[1] = 0.0f;
+    sys.vy[1] = 0.0f;
+    sys.vz[1] = 0.0f;
+
+    compute_accelerations(&sys, 2);
+    ax_before = sys.ax[0];
+    integrate(&sys, 2, 0.1f);
+
+    ASSERT_TRUE(sys.x[0] > 0.0f);
+    ASSERT_TRUE(sys.vx[0] > 0.0f);
+    ASSERT_TRUE(fabsf(sys.ax[0] - ax_before) > 1e-9f);
+
+    set_integrator_mode(INTEGRATOR_EULER);
     free_system(&sys);
 }
 
@@ -354,6 +494,8 @@ int main(void)
     RUN_TEST(test_allocate_free);
     RUN_TEST(test_allocate_zero_does_not_crash);
     RUN_TEST(test_initialize_accelerations_zero);
+    RUN_TEST(test_init_galaxy_disk_sets_central_body_and_tangential_orbits);
+    RUN_TEST(test_apply_virial_theorem_scales_to_equilibrium);
 
     RUN_TEST(test_load_hyg_row_count);
     RUN_TEST(test_load_hyg_sol_position);
@@ -368,6 +510,7 @@ int main(void)
     RUN_TEST(test_barnes_hut_matches_direct_small_system);
 
     RUN_TEST(test_integrate_updates_pos_and_vel);
+    RUN_TEST(test_integrate_leapfrog_refreshes_acceleration);
 
     RUN_TEST(test_write_snapshot_creates_file);
     RUN_TEST(test_write_snapshot_series_files);
