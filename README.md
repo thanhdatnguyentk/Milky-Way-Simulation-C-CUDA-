@@ -7,14 +7,33 @@ README này mô tả trạng thái hiện tại của codebase và cách build/c
 ## Trạng thái hiện tại
 
 - Đã có cấu trúc `SystemOfBodies` theo SoA: `mass`, `x/y/z`, `vx/vy/vz`, `ax/ay/az`, `radius`, `lum`, `absmag`, `ci`.
-- Đã có solver CPU direct O(N²) và Barnes-Hut O(N log N) để tăng hiệu năng khi cần.
+- **Solver CPU**: Direct O(N²) + Barnes-Hut O(N log N) octree được triển khai đầy đủ.
+- **Solver GPU**: Direct O(N²) via shared-memory tiling (tối ưu CameraKernelParams precompute). Barnes-Hut/FMM đang phát triển Phase 2A–2B.
+- **Integrator**: Hiện tại Forward Euler (CPU+GPU). Leapfrog symplectic sẽ triển khai Phase 1.
+- **Memory**: Hiện tại explicit `cudaMalloc/cudaMemcpy`. Unified Memory Phase 3.
 - Đã có đường GPU persistent cho simulation (`initialize_cuda_simulation` + `step_cuda_simulation`) để tránh upload lặp lại mỗi frame.
 - Đã có renderer GPU với 2 mode:
-	- `raytrace`: ray-sphere intersection trên tập sao đã frustum-cull.
-	- `raster`: Gaussian splat glow với perspective attenuation và tone mapping.
-- Đã có telemetry render theo frame: `visible_count`, `cull_ms`, `draw/trace_ms`, `fps`.
-- Đã có preview realtime trên Windows và hỗ trợ CUDA-OpenGL PBO interop (zero-copy path cho hiển thị khi khả dụng).
-- Đã hỗ trợ nạp dataset thực từ CSV (`--data data/hyg_v42.csv`).
+	- `raytrace`: ray-sphere intersection (~912ms/frame ở 1280×720 với 119.6k stars).
+	- `raster`: Gaussian splat (~2ms/frame, 450× nhanh hơn raytrace) — sản xuất path.
+- Đã có telemetry render: `visible_count`, `cull_ms`, `draw/trace_ms`, `fps`.
+- Đã có preview realtime Windows + CUDA-OpenGL PBO interop (zero-copy path).
+- Đã hỗ trợ nạp dataset thực từ CSV (`--data data/hyg_v42.csv`). HYG v4.2: 119,626 thiên thể.
+- Đã có khởi tạo ổn định dạng đĩa quay + virial relaxation tự động.
+
+## Ổn định động lực học ban đầu
+
+Để tránh hệ sụp nhanh về tâm (cold start), project đang áp dụng 2 lớp ổn định ngay khi tạo trạng thái ban đầu:
+
+1. **Rotating Galactic Disk**
+- Body `0` là tâm thiên hà tại `(0, 0, 0)` với khối lượng lớn.
+- Các body còn lại được rải trong đĩa mỏng, vận tốc tiếp tuyến theo quỹ đạo tròn quanh tâm.
+
+2. **Virial Relaxation**
+- Sau khi có trạng thái ban đầu (từ random disk hoặc từ CSV), vận tốc được scale để đưa hệ về gần cân bằng virial:
+	- `K = sum(0.5 * m * v^2)`
+	- `U = sum(-G * m_i * m_j / sqrt(r^2 + softening))` với `i < j`
+	- Scale vận tốc với `q = sqrt(|U| / (2K))`
+- Mục tiêu là đưa hệ gần điều kiện `2K + U = 0` trước khi bắt đầu tích phân theo thời gian.
 
 ## Mục tiêu dự án
 
@@ -53,12 +72,14 @@ Xây dựng một phiên bản mô phỏng N-body tối thiểu chạy được 
 
 ## Cấu trúc dữ liệu hiện có
 
-Trong [main.c](main.c), hệ vật thể đang được biểu diễn theo dạng Structure of Arrays (SoA):
+Trong `main.c`, hệ vật thể được biểu diễn theo dạng Structure of Arrays (SoA):
 
 - `mass`
 - `x`, `y`, `z`
 - `vx`, `vy`, `vz`
 - `ax`, `ay`, `az`
+- `radius`
+- `lum`, `absmag`, `ci`
 
 Cách tổ chức này phù hợp cho tối ưu hiệu năng sau này, đặc biệt khi chuyển sang CUDA vì dữ liệu đồng nhất theo từng trường sẽ dễ truy cập song song hơn.
 
@@ -161,12 +182,46 @@ Tiêu chí hoàn thành:
 `-- output/
 ```
 
-## Công việc ưu tiên tiếp theo
+## Chiến lược tối ưu đa pha (1–2 tháng)
 
-1. Giảm thêm chi phí present path bằng cách render trực tiếp vào resource interop (bỏ bước copy RGBA phụ trong GPU).
-2. Tối ưu kernel `raster` ở scene dày (tile/binning để giảm atomic contention).
-3. Bổ sung benchmark chuẩn theo nhiều bucket (`N=512`, `N=5k`, `N=50k`) cho cả `raytrace` và `raster`.
-4. Tăng coverage test cho chất lượng ảnh (độ sáng theo depth, mapping màu theo `ci`) và stability run dài.
+### Phạm vi và Mục tiêu
+Dự án đang triển khai ba hướng chính để nâng khả năng scale và độ ổn định:
+
+1. **Thuật toán (Algorithm)**: Triển khai song song CUDA Barnes-Hut và CUDA FMM để xử lý N > 100k hạt với throughput cao hơn O(N²) direct compute.
+2. **Tích phân thời gian (Integrator)**: Nâng cấp từ Forward Euler sang Leapfrog Kick-Drift-Kick để giảm energy drift trong chạy dài hạn.
+3. **Quản lý bộ nhớ (Memory)**: Chuyển từ explicit `cudaMalloc/cudaMemcpy` sang CUDA Unified Memory làm mặc định cho simulation buffers, kèm prefetch hints để tối ưu hiệu năng.
+
+### Lộ trình triển khai
+
+**Phase 0 (Tuần 1)**: Benchmark baseline
+- Chuẩn hóa suite benchmark cho N=512, 5k, 50k, 120k
+- Thu thập: steps/s, fps, cull_ms, draw_ms, force error, energy drift, momentum drift
+
+**Phase 1 (Tuần 1–2)**: Leapfrog integrator
+- Thay Forward Euler bằng Leapfrog Kick-Drift-Kick trên CPU/GPU
+- Giữ fallback Euler, thêm test invariants (energy/momentum drift)
+
+**Phase 2A (Tuần 2–4, song song 2B)**: CUDA Barnes-Hut
+- Linear octree (Morton ordering + device node pool)
+- Kernel: build tree, mass aggregation, force traversal (theta criterion)
+- Fallback về direct CUDA khi thiếu tài nguyên
+
+**Phase 2B (Tuần 2–5, song parallel 2A)**: CUDA FMM
+- Prototype FMM 3D (P2M, M2M, M2L, L2P) với order thấp
+- Cấu hình order/acceptance để trade-off accuracy–throughput
+- Tùy chọn: PPPM + cuFFT nếu profiling hỗ trợ
+
+**Phase 3 (Tuần 3–6)**: Unified Memory migration
+- Chuyển g_sim_* sang `cudaMallocManaged`
+- Thêm prefetch/hints, giữ explicit fallback
+
+**Phase 4 (Tuần 5–7)**: Solver orchestration
+- Mode: direct|bh|fmm
+- Auto-selection policy, warmup profiling
+
+**Phase 5 (Tuần 7–8)**: Hardening & docs
+- Tiêu chí nghiệm thu, regression gates
+- Benchmark matrix, cảnh báo memory budget
 
 ## Cách chạy phiên bản hiện tại
 
@@ -209,7 +264,7 @@ clang -Wall -Wextra -Iinclude main.c src/system.c src/simulation.c src/io.c -lm 
 Chương trình hiện tại nhận tối đa 12 tham số vị trí và các cờ mở rộng:
 
 ```text
-simulation [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_time_interval] [render_width] [render_height] [fov] [exposure] [gamma] [camera_profile] [--render-mode <raytrace|raster>] [--clear-output] [--infinite] [--data <csv_path>]
+simulation[_cpu|_gpu].exe [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_time_interval] [render_width] [render_height] [fov] [exposure] [gamma] [camera_profile] [--render-mode <raytrace|raster>] [--clear-output] [--infinite] [--data <csv_path>]
 ```
 
 Ý nghĩa:
@@ -217,7 +272,7 @@ simulation [num_bodies] [num_steps] [dt] [output_interval] [backend] [snapshot_t
 - `num_bodies`: số lượng vật thể.
 - `num_steps`: số bước mô phỏng (`inf` hoặc cờ `--infinite` để chạy vô hạn cho tới khi bấm `Esc` hoặc đóng cửa sổ preview).
 - `dt`: độ dài mỗi bước thời gian.
-- `output_interval`: chu kỳ in snapshot ra màn hình.
+- `output_interval`: chu kỳ in snapshot ra màn hình (số nguyên dương).
 - `backend`: `cpu` hoặc `gpu`. Nếu bỏ qua thì mặc định là `cpu`.
 - `snapshot_time_interval`: nếu > 0 thì ghi snapshot theo thời gian mô phỏng thực (ví dụ `0.1`), nếu bằng 0 thì dùng `output_interval` theo step như cũ.
 - `render_width`, `render_height`: độ phân giải PNG render realtime khi chạy backend `gpu`. Mặc định là `1280x720`.
@@ -241,7 +296,9 @@ simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric
 simulation_gpu.exe 512 inf 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --clear-output
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raytrace
 simulation_gpu.exe 512 1000 0.01 20 gpu 0.1 1280 720 75 1.4 2.0 isometric --render-mode raster
-simulation_gpu.exe 1 1 0.01 1 gpu 0.1 640 360 70 1.2 2.2 default --clear-output --data data/hyg_v42.csv --infinite
+simulation_gpu.exe 1 1 0.01 1 gpu 0.1 1280 720  70 1.2 2.2 default --clear-output --data data/hyg_v42.csv --infinite --render-mode raster
+build_gpu.bat
+simulation_gpu.exe 32 inf 0.01 2 gpu 0.02 1280 720  70 1.2 2.2 default --clear-output --data data/hyg_v42.csv --render-mode raster
 ```
 
 Điều khiển realtime trong lúc chạy (Windows terminal):
@@ -270,6 +327,8 @@ Hiện tại chương trình sẽ:
 - Đường GPU dùng persistent simulation buffers dùng chung cho compute/render để giảm upload lặp lại và tăng FPS.
 - Preview/HUD hiển thị realtime: `step`, `time`, `FPS`, `mode`, `exposure`, `gamma`, `FOV`, `zoom`, `time_scale`.
 - Console telemetry in theo frame: `[Render] step=... mode=... visible=... cull=...ms draw=...ms fps=...`.
+- Nếu dùng dữ liệu random (không `--data`), hệ được khởi tạo dạng đĩa quay + virial relaxation trước khi chạy.
+- Nếu dùng `--data`, dữ liệu vận tốc từ catalog cũng được virial relaxation tự động để giảm mất cân bằng động năng/thế năng ban đầu.
 
 ## Yêu cầu môi trường dự kiến
 
@@ -280,4 +339,13 @@ Hiện tại chương trình sẽ:
 
 ## Ghi chú
 
-Project đã vượt phạm vi baseline ban đầu: đã có dataset real, preview realtime, raytrace/raster renderer, benchmark/test GPU mở rộng, và interop path để tối ưu hiển thị. Các phase tiếp theo tập trung vào tối ưu sâu và mở rộng chất lượng hình ảnh hơn là xây lại nền tảng.
+Project đã vượt phạm vi baseline ban đầu: dataset real, preview realtime, raytrace/raster renderer, benchmark/test GPU, PBO interop, galaxy disk + virial relaxation.
+
+**Trạng thái hiện tại (Mar 2026)**:
+- GPU direct solver: tối ưu shared-memory tiling, pass 74 GPU tests.
+- Raster path sản xuất (~2ms/frame, 120k stars); raytrace dùng QA (non-scaling).
+- Forward Euler: ổn định ngắn hạn, energy drift dài hạn.
+- Explicit memory: hiệu quả hiện tại, sẵn sàng UM migration.
+
+**Phase tiếp theo (tuần 1–8)**:
+Solver scale-up (BH+FMM, Phase 2A–2B), integrator symplectic (Phase 1), memory architecture (Phase 3). Xem "Chiến lược tối ưu đa pha" để chi tiết roadmap, mốc, tiêu chí.
